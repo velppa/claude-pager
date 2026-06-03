@@ -78,21 +78,15 @@ pub const mouse_off = "\x1b[?1006l\x1b[?1003l\x1b[?1000l\x1b[?1007l"; // MOUSE_O
 
 // ── ANSI-aware visible length ──────────────────────────────────────────────
 //
-// Walks the byte string s, skipping ANSI escape sequences and counting the
-// number of *display columns* occupied by the visible text.
+// Walks the byte string s, skipping ANSI escape sequences and counting every
+// remaining byte as one column. This deliberately mirrors the C vlen
+// (bin/pager.c:2243-2259) byte-for-byte: the C has no Unicode/wide-char width
+// handling, so neither does this — required for byte-identical render parity.
 //
-// Escape sequences handled:
-//   CSI  ESC '['  … final-byte (0x40-0x7E or '~')
-//   OSC  ESC ']'  … BEL (0x07) or ST (ESC '\')
-//   other ESC x   consumed silently
-//
-// Wide-character (CJK) ranges contributing 2 columns — derived from the
-// Unicode East Asian Width "Wide" (W) and "Fullwidth" (F) categories, which
-// is the standard wcwidth(3) definition used in most terminal implementations.
-// The C source (vlen, lines 2243-2259) does NOT implement wide-char logic;
-// it counts one column per byte.  This Zig implementation extends it to be
-// column-accurate for Unicode text, which is the intended semantics described
-// in the task spec.
+// Escape sequences skipped (not counted):
+//   CSI  ESC '['  … up to and including a final byte (letter or '~')
+//   OSC  ESC ']'  … up to BEL (0x07) or ST (ESC '\')
+//   other ESC x   consumes the single byte after ESC
 
 pub fn visibleLen(s: []const u8) usize {
     var n: usize = 0;
