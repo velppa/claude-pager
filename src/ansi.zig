@@ -1,6 +1,8 @@
 // ansi.zig — SGR color/style constants and ANSI-aware visible-length.
 // Constants ported from bin/pager.c lines 28-90.
-// visibleLen ported from bin/pager.c:2243 (vlen), extended with UTF-8 / wide-char support.
+// visibleLen ported from bin/pager.c:2243 (vlen). Byte-count semantics, matching
+// the C exactly (no Unicode/wide-char width): every non-escape byte counts as one
+// column. This is required for byte-identical render parity with the C goldens.
 
 const std = @import("std");
 
@@ -100,13 +102,11 @@ pub fn visibleLen(s: []const u8) usize {
             i += 1;
             if (i >= s.len) break;
             if (s[i] == '[') {
-                // CSI — skip until final byte 0x40-0x7E (inclusive of '~' = 0x7E)
+                // CSI — skip until a final byte (letter or '~'), then consume it.
+                // Mirrors C vlen: while (!isalpha && *s!='~') s++; if (*s) s++;
                 i += 1;
-                while (i < s.len) {
-                    const b = s[i];
-                    i += 1;
-                    if (b >= 0x40 and b <= 0x7E) break;
-                }
+                while (i < s.len and !isCsiFinal(s[i])) i += 1;
+                if (i < s.len) i += 1;
             } else if (s[i] == ']') {
                 // OSC — skip until BEL or ST (ESC \)
                 i += 1;
@@ -126,130 +126,16 @@ pub fn visibleLen(s: []const u8) usize {
                 i += 1;
             }
         } else {
-            // Decode one UTF-8 codepoint
-            const seq_len = std.unicode.utf8ByteSequenceLength(s[i]) catch {
-                // Invalid UTF-8: treat as one byte, one column
-                i += 1;
-                n += 1;
-                continue;
-            };
-            if (i + seq_len > s.len) {
-                // Truncated sequence
-                i += 1;
-                n += 1;
-                continue;
-            }
-            const cp = std.unicode.utf8Decode(s[i .. i + seq_len]) catch {
-                i += 1;
-                n += 1;
-                continue;
-            };
-            i += seq_len;
-            n += codepointWidth(cp);
+            // Byte-count, exactly like C vlen (no Unicode width).
+            n += 1;
+            i += 1;
         }
     }
     return n;
 }
 
-// Returns the display column width of a Unicode codepoint (1 or 2).
-// Wide (W) and Fullwidth (F) categories per Unicode East Asian Width tables.
-fn codepointWidth(cp: u21) usize {
-    // Zero-width / combining: return 0 would be correct but we don't need it
-    // for current tests; treat everything not wide as width 1.
-    if (isWide(cp)) return 2;
-    return 1;
-}
-
-// Unicode East Asian Width — Wide (W) and Fullwidth (F) ranges.
-// Source: Unicode 15 EastAsianWidth.txt + wcwidth reference implementations.
-fn isWide(cp: u21) bool {
-    return switch (cp) {
-        // Fullwidth forms
-        0x1100...0x115F => true, // Hangul Jamo
-        0x231A...0x231B => true, // Watch, Hourglass
-        0x2329...0x232A => true, // Angle brackets
-        0x23E9...0x23EC => true, // various clock faces
-        0x23F0 => true,
-        0x23F3 => true,
-        0x25FD...0x25FE => true,
-        0x2614...0x2615 => true,
-        0x2648...0x2653 => true,
-        0x267F => true,
-        0x2693 => true,
-        0x26A1 => true,
-        0x26AA...0x26AB => true,
-        0x26BD...0x26BE => true,
-        0x26C4...0x26C5 => true,
-        0x26CE => true,
-        0x26D4 => true,
-        0x26EA => true,
-        0x26F2...0x26F3 => true,
-        0x26F5 => true,
-        0x26FA => true,
-        0x26FD => true,
-        0x2702 => true,
-        0x2705 => true,
-        0x2708...0x270D => true,
-        0x270F => true,
-        0x2712 => true,
-        0x2714 => true,
-        0x2716 => true,
-        0x271D => true,
-        0x2721 => true,
-        0x2728 => true,
-        0x2733...0x2734 => true,
-        0x2744 => true,
-        0x2747 => true,
-        0x274C => true,
-        0x274E => true,
-        0x2753...0x2755 => true,
-        0x2757 => true,
-        0x2763...0x2764 => true,
-        0x2795...0x2797 => true,
-        0x27A1 => true,
-        0x27B0 => true,
-        0x27BF => true,
-        0x2B1B...0x2B1C => true,
-        0x2B50 => true,
-        0x2B55 => true,
-        0x2E80...0x303E => true, // CJK Radicals, Kangxi, Ideographic, etc.
-        0x3041...0x33BF => true, // Hiragana, Katakana, Bopomofo, Hangul Compat, Kanbun, etc.
-        0x33FF...0x33FF => true,
-        0x3400...0x4DBF => true, // CJK Extension A
-        0x4E00...0x9FFF => true, // CJK Unified Ideographs
-        0xA000...0xA4CF => true, // Yi
-        0xA960...0xA97F => true, // Hangul Jamo Extended-A
-        0xAC00...0xD7AF => true, // Hangul Syllables
-        0xF900...0xFAFF => true, // CJK Compatibility Ideographs
-        0xFE10...0xFE1F => true, // Vertical Forms
-        0xFE30...0xFE6F => true, // CJK Compatibility Forms, Small Forms
-        0xFF01...0xFF60 => true, // Fullwidth Latin, Halfwidth/Fullwidth
-        0xFFE0...0xFFE6 => true, // Fullwidth signs
-        0x16FE0...0x16FFF => true, // Tangut components etc.
-        0x17000...0x187FF => true, // Tangut
-        0x18800...0x18AFF => true, // Tangut components
-        0x1B000...0x1B12F => true, // Kana Extended
-        0x1B170...0x1B2FF => true, // Nushu
-        0x1F004 => true,
-        0x1F0CF => true,
-        0x1F18E => true,
-        0x1F191...0x1F19A => true,
-        0x1F1E0...0x1F1FF => true,
-        0x1F201...0x1F202 => true,
-        0x1F21A => true,
-        0x1F22F => true,
-        0x1F232...0x1F23A => true,
-        0x1F250...0x1F251 => true,
-        0x1F300...0x1F64F => true, // Misc Symbols, Emoticons
-        0x1F680...0x1F6FF => true, // Transport and Map
-        0x1F900...0x1F9FF => true, // Supplemental Symbols
-        0x20000...0x2A6DF => true, // CJK Extension B
-        0x2A700...0x2CEAF => true, // CJK Extensions C, D, E
-        0x2CEB0...0x2EBEF => true, // CJK Extension F
-        0x2F800...0x2FA1F => true, // CJK Compatibility Supplement
-        0x30000...0x3134F => true, // CJK Extension G
-        else => false,
-    };
+fn isCsiFinal(b: u8) bool {
+    return (b >= 'A' and b <= 'Z') or (b >= 'a' and b <= 'z') or b == '~';
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -258,8 +144,9 @@ test "visibleLen ignores SGR sequences" {
     try std.testing.expectEqual(@as(usize, 3), visibleLen("\x1b[31mabc\x1b[0m"));
 }
 
-test "visibleLen counts wide CJK as 2" {
-    try std.testing.expectEqual(@as(usize, 2), visibleLen("世"));
+test "visibleLen counts CJK by UTF-8 bytes (matches C vlen)" {
+    // C vlen counts bytes, not display columns. "世" is 3 UTF-8 bytes → 3.
+    try std.testing.expectEqual(@as(usize, 3), visibleLen("世"));
 }
 
 test "visibleLen plain ascii" {
@@ -271,9 +158,9 @@ test "visibleLen skips OSC sequence" {
     try std.testing.expectEqual(@as(usize, 4), visibleLen("\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\"));
 }
 
-test "visibleLen mixed SGR and wide" {
-    // bold + 2 CJK chars + reset  →  4 columns
-    try std.testing.expectEqual(@as(usize, 4), visibleLen("\x1b[1m世界\x1b[0m"));
+test "visibleLen mixed SGR and CJK counts bytes" {
+    // bold + 世界 (6 UTF-8 bytes) + reset → 6 (byte-count, matches C vlen)
+    try std.testing.expectEqual(@as(usize, 6), visibleLen("\x1b[1m世界\x1b[0m"));
 }
 
 test "visibleLen multiple SGR" {
