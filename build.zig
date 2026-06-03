@@ -24,13 +24,20 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe_cli);
 
-    const tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tests.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("src/tests.zig"),
+        .target = target,
+        .optimize = optimize,
     });
+    // Expose transcript test fixtures to `@embedFile` (they live outside the
+    // src/ package root, so they must be wired in as anonymous imports).
+    test_mod.addAnonymousImport("fixtures/sample0.jsonl", .{
+        .root_source_file = b.path("tests/fixtures/sample0.jsonl"),
+    });
+    test_mod.addAnonymousImport("fixtures/sample1.jsonl", .{
+        .root_source_file = b.path("tests/fixtures/sample1.jsonl"),
+    });
+    const tests = b.addTest(.{ .root_module = test_mod });
     const run_tests = b.addRunArtifact(tests);
     b.step("test", "Run unit tests").dependOn(&run_tests.step);
 }
