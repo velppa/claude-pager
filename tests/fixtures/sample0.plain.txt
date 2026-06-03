@@ -1,0 +1,30 @@
+
+ › Hello Alice, can you tell me about **bold text** and `inline code` in Markdown?
+
+Sure! In Markdown, bold text is wrapped in double asterisks, and inline code uses backticks.
+
+Here is a quick reference table:
+
+  ┌──────────────┬──────────┐
+  │ Syntax       │ Result   │
+  ├──────────────┼──────────┤
+  │ `**word**`   │ **bold** │
+  ├──────────────┼──────────┤
+  │ `` `code` `` │ `code`   │
+  ├──────────────┼──────────┤
+  │ `*word*`     │ *italic* │
+  └──────────────┴──────────┘
+
+For more details see example.com/markdown-guide
+
+ › Great. Now show me a fenced code block example.
+
+Here is a small JSON snippet:
+
+│ {
+│   "name": "alice",
+│   "greeting": "hello world",
+│   "count": 42
+│ }
+
+The renderer draws a │ rail on the left of fenced code blocks.

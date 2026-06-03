@@ -1,0 +1,21 @@
+
+ › Alice, please run a shell command to list files.
+
+• Bash ls -la /tmp/example
+  total 8
+  drwxr-xr-x  2 alice staff   64 Jan  2 00:00 .
+  drwxrwxrwt 12 root  wheel  384 Jan  2 00:00 ..
+  -rw-r--r--  1 alice staff    0 Jan  2 00:00 example.txt
+
+The directory contains one file: example.txt. It is empty (0 bytes).
+
+Here is a shell script to create a sample file:
+
+│ #!/usr/bin/env bash
+│ # Create a sample file with some content
+│ cat > /tmp/example/example.txt <<'EOF'
+│ hello from alice
+│ EOF
+│ echo done
+
+You can also check the Unicode support: 世界 means "world" in Chinese.
