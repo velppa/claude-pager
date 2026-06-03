@@ -1,0 +1,11 @@
+.{
+    .name = .claude_pager,
+    .version = "3.0.0",
+    .fingerprint = 0x1b60c0631b15d9cd,
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
