@@ -3,4 +3,5 @@ test {
     _ = @import("ansi.zig");
     _ = @import("transcript.zig");
     _ = @import("markdown.zig");
+    _ = @import("links.zig");
 }
