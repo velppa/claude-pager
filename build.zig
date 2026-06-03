@@ -37,6 +37,19 @@ pub fn build(b: *std.Build) void {
     test_mod.addAnonymousImport("fixtures/sample1.jsonl", .{
         .root_source_file = b.path("tests/fixtures/sample1.jsonl"),
     });
+    test_mod.addAnonymousImport("fixtures/sample2.jsonl", .{
+        .root_source_file = b.path("tests/fixtures/sample2.jsonl"),
+    });
+    // render.zig parity tests compare against the C-generated plain goldens.
+    test_mod.addAnonymousImport("fixtures/sample0.plain.txt", .{
+        .root_source_file = b.path("tests/fixtures/sample0.plain.txt"),
+    });
+    test_mod.addAnonymousImport("fixtures/sample1.plain.txt", .{
+        .root_source_file = b.path("tests/fixtures/sample1.plain.txt"),
+    });
+    test_mod.addAnonymousImport("fixtures/sample2.plain.txt", .{
+        .root_source_file = b.path("tests/fixtures/sample2.plain.txt"),
+    });
     const tests = b.addTest(.{ .root_module = test_mod });
     const run_tests = b.addRunArtifact(tests);
     b.step("test", "Run unit tests").dependOn(&run_tests.step);
