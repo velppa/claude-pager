@@ -5986,3 +5986,83 @@ void run_pager(int tty_fd, const char *transcript, int editor_pid, int ctx_limit
     link_map_clear();
     queue_clear_items();
 }
+
+/* ── Plain-text render (for TUI editors) ───────────────────────────────────── */
+
+/* Write SRC to OUT with ANSI CSI and OSC escape sequences removed. The visible
+ * text of OSC-8 hyperlinks is kept; the URI (carried inside the OSC payload) is
+ * dropped along with the escape wrappers. */
+static void strip_ansi_to(const char *src, FILE *out) {
+    for (const unsigned char *p = (const unsigned char *)src; *p; ) {
+        if (*p == 0x1b) {                       /* ESC */
+            if (p[1] == '[') {                  /* CSI: ESC [ ... final 0x40-0x7E */
+                p += 2;
+                while (*p && !(*p >= 0x40 && *p <= 0x7e)) p++;
+                if (*p) p++;
+                continue;
+            }
+            if (p[1] == ']') {                  /* OSC: ESC ] ... BEL or ST (ESC \) */
+                p += 2;
+                while (*p && *p != 0x07 && !(*p == 0x1b && p[1] == '\\')) p++;
+                if (*p == 0x07) p++;
+                else if (*p == 0x1b) p += 2;
+                continue;
+            }
+            if (p[1]) p += 2;                   /* other 2-byte escape */
+            else p++;
+            continue;
+        }
+        if (*p == 0x07) { p++; continue; }      /* stray BEL (OSC-8 terminator) */
+        fputc((int)*p, out);
+        p++;
+    }
+}
+
+int pager_render_plain(const char *transcript, const char *out_path,
+                       int cols, int ctx_limit) {
+    if (!transcript || !transcript[0] || !out_path || !out_path[0]) return -1;
+    if (cols <= 0) cols = 100;
+    if (cols < 20) cols = 20;
+    if (cols > 1000) cols = 1000;
+    if (ctx_limit <= 0) ctx_limit = 200000;
+
+    /* The render pipeline reads terminal width from this global. */
+    g_cols = cols;
+    g_oom = 0;
+    g_allow_remote_file_links = -1;
+
+    Items items; memset(&items, 0, sizeof(items));
+    int tok = 0; double pct = 0;
+    parse_transcript(transcript, &items, &tok, &pct, ctx_limit);
+
+    Lines L; L_init(&L);
+    render_items(&L, &items);
+    I_free(&items);
+
+    FILE *out = fopen(out_path, "w");
+    if (!out) { L_free(&L); return -1; }
+    for (int i = 0; i < L.n; i++) {
+        const char *s = L.d[i];
+        if (!s || line_is_wrap_placeholder(s)) continue;
+        /* Capture the ANSI-stripped line so trailing pad whitespace (added for
+         * the TUI's full-width backgrounds) can be removed before it reaches a
+         * plain-text editor like Emacs. Box-drawing borders are kept. */
+        char *buf = NULL; size_t bufsz = 0;
+        FILE *ms = open_memstream(&buf, &bufsz);
+        if (ms) {
+            strip_ansi_to(s, ms);
+            fclose(ms);
+            while (bufsz > 0 && (buf[bufsz-1] == ' ' || buf[bufsz-1] == '\t' ||
+                                 buf[bufsz-1] == '\r'))
+                bufsz--;
+            fwrite(buf, 1, bufsz, out);
+            free(buf);
+        } else {
+            strip_ansi_to(s, out);
+        }
+        fputc('\n', out);
+    }
+    fclose(out);
+    L_free(&L);
+    return 0;
+}

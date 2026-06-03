@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Claude Code prompt editor: opens the prompt temp file in Emacs with the
+# session transcript shown read-only above a separator. Only the text you
+# type below the separator is saved back as the prompt.
+set -euo pipefail
+
+promptfile="${1:?no prompt file given}"
+export TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EL="$SCRIPT_DIR/claude-prompt.el"
+
+# --- resolve transcript .jsonl ---
+transcript=""
+tty_dev=$(ps -o tty= -p $$ 2>/dev/null | tr -d ' ' || true)
+if [[ -n "$tty_dev" && "$tty_dev" != "?"* ]]; then
+  ptr="/tmp/claude-transcript-${tty_dev}"
+  [[ -r "$ptr" ]] && transcript=$(<"$ptr")
+fi
+if [[ -z "$transcript" || ! -r "$transcript" ]]; then
+  key="${PWD//\//-}"
+  transcript=$(ls -t "$HOME/.claude/projects/${key}"/*.jsonl 2>/dev/null | head -1 || true)
+fi
+
+# --- load lib + arm the pending transcript (non-blocking) ---
+# If claude-pager-open pre-rendered the transcript to plain text, prefer that
+# (single source of truth with the pager); else fall back to the .jsonl which
+# Emacs renders itself.
+tx_el="nil"
+[[ -n "$transcript" && -r "$transcript" ]] && tx_el="\"$transcript\""
+render_el="nil"
+rf="${CLAUDE_PAGER_RENDER_FILE:-}"
+[[ -n "$rf" && -r "$rf" ]] && render_el="\"$rf\""
+emacsclient -e "(progn (load \"$EL\" nil t) (setq claude-prompt--pending-transcript $tx_el claude-prompt--pending-render $render_el))" \
+  >/dev/null 2>&1 || true
+
+# --- open the prompt file; blocks until C-x # ---
+exec emacsclient "$promptfile"

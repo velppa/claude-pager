@@ -690,10 +690,46 @@ static int is_terminal_editor(const char *editor) {
     return 0;
 }
 
+/* ── Plain-text transcript render (for editors that show context inline) ───── */
+
+/* Render the transcript to a plain-text file and export its path via
+ * CLAUDE_PAGER_RENDER_FILE. Editors (e.g. Emacs via claude-emacs-prompt) read
+ * this to show the same context the pager would. Safe to call on both the
+ * terminal and GUI paths; the env var is inherited by the editor child. */
+static void maybe_render_transcript(void) {
+    const char *home = getenv("HOME");
+    char transcript[2048] = "";
+    if (home) find_transcript(home, transcript, sizeof(transcript));
+    if (!transcript[0]) return;
+
+    int cols = 100;
+    struct winsize ws = {0};
+    int tfd = open("/dev/tty", O_RDONLY);
+    if (tfd >= 0) {
+        if (ioctl(tfd, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+            cols = ws.ws_col < 120 ? ws.ws_col : 120;
+        close(tfd);
+    }
+    char render_path[256];
+    snprintf(render_path, sizeof(render_path),
+             "/tmp/claude-pager-render-%d.txt", (int)getpid());
+    if (pager_render_plain(transcript, render_path, cols, 200000) == 0) {
+        setenv("CLAUDE_PAGER_RENDER_FILE", render_path, 1);
+        DBG("rendered transcript to %s (cols=%d)\n", render_path, cols);
+    } else {
+        DBG("plain render failed for %s\n", transcript);
+    }
+}
+
 /* ── Terminal editor path (exec directly, no pager) ────────────────────────── */
 
 static int terminal_editor_path(const char *editor, const char *file) {
     DBG("terminal editor, exec without pager\n");
+
+    /* A true terminal editor and the pager can't share the terminal, so render
+     * the transcript to plain text and hand the editor a path to it instead. */
+    maybe_render_transcript();
+
     char cmd[4096];
     snprintf(cmd, sizeof(cmd), "exec %s \"$1\"", editor);
     execl("/bin/sh", "sh", "-c", cmd, "sh", file, (char *)NULL);
@@ -726,6 +762,9 @@ static int generic_editor_path(const char *editor, const char *file) {
     int known_gui = is_known_gui_editor(editor);
 
     if (forced_gui || known_gui) {
+        /* Editor shows context inline (Emacs) AND pager runs in terminal:
+         * render the transcript file before forking so the editor inherits it. */
+        maybe_render_transcript();
         pid_t ed_pid = spawn_editor(editor, file, 0);
         if (ed_pid < 0) return 1;
         DBG("fast GUI path: editor forked pid=%d%s%s\n",
