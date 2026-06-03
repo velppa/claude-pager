@@ -33,7 +33,7 @@ tests/gen_golden.sh
 
 Parameters: **cols=110**, **ctx_limit=200000**.
 
-The script compiles a tiny driver against `bin/pager.o`, calls `pager_render_plain()` for each `sampleN.jsonl`, and writes `sampleN.plain.txt`.
+The script compiles a tiny driver against `bin/pager.o`, calls `pager_render_plain()` for each `sampleN.jsonl`, and writes `sampleN.plain.txt`. `tests/gen_golden.sh` requires `bin/pager.o` to exist (produced by `cd bin && make`).
 
 ## Zig port contract
 
