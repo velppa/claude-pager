@@ -1603,3 +1603,24 @@ test "sample2 renders byte-identical to plain golden (long-line wrapping)" {
     const golden = @embedFile("fixtures/sample2.plain.txt");
     try std.testing.expectEqualStrings(golden, built.items);
 }
+
+// ── Wrap-placeholder slot accounting (ported from bin/pager_wrap_tests.c) ────
+
+test "pushw reserves wrap-placeholder slots for an overlong line" {
+    // C test_wrap_slots_mark_placeholders: 25-col line at cols=10 → 3 slots.
+    var l = Lines{ .alloc = std.testing.allocator, .cols = 10 };
+    defer l.deinitOnError();
+    try l.pushw("1234567890123456789012345");
+    try std.testing.expectEqual(@as(usize, 3), l.out.items.len);
+    try std.testing.expectEqualStrings("1234567890123456789012345", l.out.items[0]);
+    try std.testing.expect(l.out.items[1].len == 1 and l.out.items[1][0] == ansi.wrap_placeholder[0]);
+    try std.testing.expect(l.out.items[2].len == 1 and l.out.items[2][0] == ansi.wrap_placeholder[0]);
+}
+
+test "pushw keeps a short line as a single slot" {
+    // C test_unwrapped_line_is_stable.
+    var l = Lines{ .alloc = std.testing.allocator, .cols = 80 };
+    defer l.deinitOnError();
+    try l.pushw("short line");
+    try std.testing.expectEqual(@as(usize, 1), l.out.items.len);
+}
