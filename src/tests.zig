@@ -15,4 +15,5 @@ test {
     _ = @import("queue.zig");
     _ = @import("draw.zig");
     _ = @import("pager.zig");
+    _ = @import("settings.zig");
 }
