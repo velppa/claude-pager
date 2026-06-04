@@ -97,6 +97,9 @@ mkdir -p "${INSTALL_DIR}/bin"
 install -m 0755 "$BUILD_OPEN" "$BINARY"
 install -m 0755 "$BUILD_CLI" "${INSTALL_DIR}/bin/claude-pager-c"
 
+# Strip the local symbol table that ReleaseSmall leaves behind (~10% smaller).
+strip "$BINARY" "${INSTALL_DIR}/bin/claude-pager-c" 2>/dev/null || true
+
 if [[ ! -x "$BINARY" ]]; then
     echo "ERROR: install failed — $BINARY not found" >&2
     exit 1

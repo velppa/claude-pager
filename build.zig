@@ -4,7 +4,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     // Default to ReleaseSmall (a terminal pager — favor small binaries).
     // Override per build, e.g. `zig build -Doptimize=Debug`.
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
+    const optimize = b.option(
+        std.builtin.OptimizeMode,
+        "optimize",
+        "Optimize mode (default ReleaseSmall)",
+    ) orelse .ReleaseSmall;
     // Strip the shipped executables in any release build (no effect on Debug).
     const strip = optimize != .Debug;
 
