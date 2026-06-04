@@ -23,17 +23,6 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe_open);
 
-    const exe_cli = b.addExecutable(.{
-        .name = "claude-pager-c",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main_cli.zig"),
-            .target = target,
-            .optimize = optimize,
-            .strip = strip,
-        }),
-    });
-    b.installArtifact(exe_cli);
-
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/tests.zig"),
         .target = target,

@@ -71,10 +71,8 @@ pub const tr = "\xe2\x94\x90"; // ┐  top-right corner
 pub const bl = "\xe2\x94\x94"; // └  bottom-left corner
 pub const br = "\xe2\x94\x98"; // ┘  bottom-right corner
 
-// ── Mouse sequences ────────────────────────────────────────────────────────
-
-pub const mouse_on = "\x1b[>0s\x1b[?1007l\x1b[?1000h\x1b[?1003h\x1b[?1006h"; // MOUSE_ON
-pub const mouse_off = "\x1b[?1006l\x1b[?1003l\x1b[?1000l\x1b[?1007l"; // MOUSE_OFF
+// Mouse tracking sequences were removed with the interactive pager — nothing
+// enables mouse reporting now, so terminal scroll/selection behave natively.
 
 // ── ANSI-aware visible length ──────────────────────────────────────────────
 //

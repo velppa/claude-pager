@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # claude-pager installer — run with:
-#   curl -sSL https://raw.githubusercontent.com/gradigit/claude-pager/main/install.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/velppa/claude-pager/zig-rewrite/install.sh | bash
 set -euo pipefail
 
-REPO="https://github.com/gradigit/claude-pager.git"
+REPO="https://github.com/velppa/claude-pager.git"
+REPO_BRANCH="zig-rewrite"
 INSTALL_DIR="${HOME}/.claude-pager"
 BINARY="${INSTALL_DIR}/bin/claude-pager-open"
 SETTINGS="${HOME}/.claude/settings.json"
 HOOK_SESSION="${INSTALL_DIR}/shim/save-session-transcript.sh"
-HOOK_STOP="${INSTALL_DIR}/shim/queue-drain-stop.sh"
 
 infer_editor_type() {
     local cmd="$1"
@@ -65,8 +65,7 @@ normalize_hook_events() {
                 []
             end;
         .hooks = (if (.hooks | type) == "object" then .hooks else {} end) |
-        .hooks.SessionStart = ((.hooks.SessionStart // []) | normalize_event_array) |
-        .hooks.Stop = ((.hooks.Stop // []) | normalize_event_array)
+        .hooks.SessionStart = ((.hooks.SessionStart // []) | normalize_event_array)
     '
 }
 
@@ -77,7 +76,7 @@ if [[ -d "$INSTALL_DIR" ]]; then
     echo "Updating existing install..."
     git -C "$INSTALL_DIR" pull --ff-only
 else
-    git clone "$REPO" "$INSTALL_DIR"
+    git clone --branch "$REPO_BRANCH" "$REPO" "$INSTALL_DIR"
 fi
 
 # ── Build ────────────────────────────────────────────────────────────────────
@@ -85,20 +84,18 @@ echo "Building..."
 ( cd "$INSTALL_DIR" && zig build -Doptimize=ReleaseSmall )
 
 BUILD_OPEN="${INSTALL_DIR}/zig-out/bin/claude-pager-open"
-BUILD_CLI="${INSTALL_DIR}/zig-out/bin/claude-pager-c"
 
-if [[ ! -x "$BUILD_OPEN" || ! -x "$BUILD_CLI" ]]; then
-    echo "ERROR: build failed — expected binaries not found in ${INSTALL_DIR}/zig-out/bin" >&2
+if [[ ! -x "$BUILD_OPEN" ]]; then
+    echo "ERROR: build failed — expected binary not found in ${INSTALL_DIR}/zig-out/bin" >&2
     exit 1
 fi
 
-# Install built binaries into ${INSTALL_DIR}/bin
+# Install built binary into ${INSTALL_DIR}/bin
 mkdir -p "${INSTALL_DIR}/bin"
 install -m 0755 "$BUILD_OPEN" "$BINARY"
-install -m 0755 "$BUILD_CLI" "${INSTALL_DIR}/bin/claude-pager-c"
 
 # Strip the local symbol table that ReleaseSmall leaves behind (~10% smaller).
-strip "$BINARY" "${INSTALL_DIR}/bin/claude-pager-c" 2>/dev/null || true
+strip "$BINARY" 2>/dev/null || true
 
 if [[ ! -x "$BINARY" ]]; then
     echo "ERROR: install failed — $BINARY not found" >&2
@@ -234,33 +231,13 @@ else
     echo "Added SessionStart hook"
 fi
 
-if jq -e --arg cmd "$HOOK_STOP" '.hooks.Stop[]?.hooks[]? | select(.command == $cmd)' "$SETTINGS" &>/dev/null; then
-    echo "Stop hook already configured"
-else
-    apply_jq --arg cmd "$HOOK_STOP" '
-        .hooks.Stop += [{
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": $cmd,
-                    "timeout": 10
-                }
-            ]
-        }]
-    '
-    echo "Added Stop hook"
-fi
-
 if ! jq -e '
     (.hooks.SessionStart | type) == "array" and
     any(.hooks.SessionStart[]?; (.hooks | type) == "array") and
-    any(.hooks.SessionStart[]?.hooks[]?; (.type == "command") and (.command == $session_cmd)) and
-    (.hooks.Stop | type) == "array" and
-    any(.hooks.Stop[]?; (.hooks | type) == "array") and
-    any(.hooks.Stop[]?.hooks[]?; (.type == "command") and (.command == $stop_cmd) and ((.timeout // 10) == 10))
-' --arg session_cmd "$HOOK_SESSION" --arg stop_cmd "$HOOK_STOP" "$SETTINGS" >/dev/null; then
+    any(.hooks.SessionStart[]?.hooks[]?; (.type == "command") and (.command == $session_cmd))
+' --arg session_cmd "$HOOK_SESSION" "$SETTINGS" >/dev/null; then
     echo "ERROR: Claude hook installation failed validation." >&2
-    echo "Expected nested hook groups with hooks[] arrays for SessionStart and Stop." >&2
+    echo "Expected a nested hook group with a hooks[] array for SessionStart." >&2
     exit 1
 fi
 

@@ -3,7 +3,7 @@
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur excepteur sint occaecat cupidatat non proident.
 
-This line is intentionally very long to force wrapping at one hundred and ten columns: Alice went to example.com and found that the page at example.com/very/long/path/to/some/resource/…es/url/handling returned a 200 OK response with useful content about 世界 and international text handling.
+This line is intentionally very long to force wrapping at one hundred and ten columns: Alice went to example.com and found that the page at https://example.com/very/long/path/to/some/resource/that/demonstrates/url/handling returned a 200 OK response with useful content about 世界 and international text handling.
 
 Here is a comparison table of encoding widths:
 
@@ -19,13 +19,13 @@ Here is a comparison table of encoding widths:
   │ é        │ U+00E9  │ 1             │ Latin extended       │
   └───────────┴─────────┴───────────────┴──────────────────────┘
 
-For reference see example.com/unicode-widths
+For reference see https://example.com/unicode-widths
 
  › Thanks Alice. Can you search for something?
 
 • WebSearch example search query
-  Result 1: Example Domain - example.com
-  Result 2: Example Org - example.org
-  Result 3: IANA Examples - example.net
+  Result 1: Example Domain - https://example.com
+  Result 2: Example Org - https://example.org
+  Result 3: IANA Examples - https://example.net
 
-Found three example results. The primary one is at example.com which is the canonical example domain reserved by IANA for documentation purposes. All three domains are safe synthetic examples with no private content.
+Found three example results. The primary one is at https://example.com which is the canonical example domain reserved by IANA for documentation purposes. All three domains are safe synthetic examples with no private content.

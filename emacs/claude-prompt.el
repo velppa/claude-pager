@@ -1,10 +1,10 @@
 ;;; claude-prompt.el --- Inline transcript when editing a Claude Code prompt -*- lexical-binding: t; -*-
 
-;; When Claude Code's Ctrl-G opens the prompt temp file via emacsclient,
-;; this shows the session transcript (read-only) above a separator and
-;; lets you type your next prompt below it.  On save (C-x #), only the
-;; text below the separator is written to the file, so Claude receives
-;; only what you typed.
+;; When Claude Code's Ctrl-G opens the prompt temp file via
+;; emacsclient, this shows the session transcript (read-only) above a
+;; separator and lets you type your next prompt below it.  On save
+;; ({C-c C-c} or {C-x #}), only the text below the separator is
+;; written to the file, so Claude receives only what you typed.
 
 ;;; Code:
 
@@ -21,7 +21,7 @@ of rendering the .jsonl ourselves, keeping a single source of truth with the
 pager.")
 
 (defvar claude-prompt-separator
-  ">>> TYPE YOUR PROMPT BELOW — text above is read-only context >>>"
+  "----->8=----- TYPE PROMPT BELOW – text above is read-only context -----"
   "Marker line; everything below it is sent as the prompt.")
 
 (defconst claude-prompt--end-marker
@@ -99,6 +99,10 @@ pager.")
 If RENDER-PATH points to a plain-text render from claude-pager-open, use it
 verbatim; otherwise render TRANSCRIPT-PATH (.jsonl) ourselves."
   (with-current-buffer buffer
+    ;; Plain text, no markdown fontification — Claude's prompt file extension
+    ;; can trigger markdown-mode otherwise. Switch first; it kills local vars,
+    ;; so all setq-local/hooks below must follow it.
+    (fundamental-mode)
     (let* ((draft (buffer-string))
            (rendered (or (claude-prompt--read-render render-path)
                          (claude-prompt--render-transcript transcript-path)))
@@ -122,7 +126,7 @@ verbatim; otherwise render TRANSCRIPT-PATH (.jsonl) ourselves."
       (add-hook 'write-contents-functions #'claude-prompt--write-body nil t)
       (local-set-key (kbd "C-c C-c") #'claude-prompt-finish)
       (setq-local header-line-format
-                  "Claude prompt — type below separator, finish with C-c C-c")
+                  "Claude prompt — type below separator, finish with `C-c C-c'")
       (claude-prompt--goto-body)
       ;; server may reposition point to top after this hook; re-assert.
       (run-at-time 0 nil
@@ -137,7 +141,8 @@ verbatim; otherwise render TRANSCRIPT-PATH (.jsonl) ourselves."
     (let ((pos (marker-position claude-prompt--body-start)))
       (goto-char pos)
       (dolist (win (get-buffer-window-list (current-buffer) nil t))
-        (set-window-point win pos)))))
+        (set-window-point win pos))
+      (recenter-top-bottom 10))))
 
 (defun claude-prompt--body-pos ()
   "Position where the prompt body starts: just after the last separator line.

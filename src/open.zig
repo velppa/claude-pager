@@ -1,19 +1,18 @@
 //! open.zig — the editor-launcher core for claude-pager-open.
 //!
-//! Ports these sections from bin/claude-pager-open.c. The external editor socket
-//! fast path and all Unix-socket / control_fd code are intentionally NOT ported:
-//!   newest_jsonl            (line 237) → newestJsonl
-//!   find_transcript         (line 260) → findTranscript
-//!   maybe_render_transcript (line 699) → maybeRenderTranscript
-//!   pre_render              (line 322) → preRender
-//!   fork_pager              (line 347) → forkPager   (NO control_fd)
-//!   spawn_editor            (line 741) → spawnEditor
-//!   terminal_editor_path    (line 726) → terminalEditorPath
-//!   generic_editor_path     (line 756) → genericEditorPath
+//! C-g flow: resolve the session transcript, render it to plain text (shared
+//! with the editor via CLAUDE_PAGER_RENDER_FILE), print that summary statically
+//! to the terminal, then launch the editor and wait. There is NO interactive
+//! pager — no mouse tracking, no scroll loop, no clickable-URL rewriting — so
+//! the terminal's native scrollback/selection are left untouched.
+//!
+//!   newestJsonl / findTranscript   — locate the newest *.jsonl transcript
+//!   maybeRenderTranscript          — render to plain text + export render file
+//!   printSummary                   — write the rendered summary to /dev/tty
+//!   spawnEditor / terminalEditorPath / genericEditorPath — launch the editor
 
 const std = @import("std");
 const render_plain = @import("render_plain.zig");
-const pager = @import("pager.zig");
 const term = @import("term.zig");
 const log = @import("log.zig");
 
@@ -156,11 +155,11 @@ fn globalNewest(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
 // ── Plain-text render for inline-context editors ────────────────────────────
 
 /// Render the transcript to /tmp/claude-pager-render-<pid>.txt and export its
-/// path via CLAUDE_PAGER_RENDER_FILE so the editor child inherits it. Best
-/// effort: silently does nothing on any failure. Mirrors maybe_render_transcript
-/// (C line 699). `tty_fd` is used to query the column width; pass -1 to skip.
-pub fn maybeRenderTranscript(alloc: std.mem.Allocator, home: []const u8, tty_fd: std.posix.fd_t) void {
-    const transcript = (findTranscript(alloc, home) catch null) orelse return;
+/// path via CLAUDE_PAGER_RENDER_FILE so the editor child inherits it. Returns
+/// the render path (caller owns/frees), or null on any failure. `tty_fd` is
+/// used to query the column width; pass -1 to skip.
+pub fn maybeRenderTranscript(alloc: std.mem.Allocator, home: []const u8, tty_fd: std.posix.fd_t) ?[]u8 {
+    const transcript = (findTranscript(alloc, home) catch null) orelse return null;
     defer alloc.free(transcript);
 
     var cols: usize = 100;
@@ -173,12 +172,13 @@ pub fn maybeRenderTranscript(alloc: std.mem.Allocator, home: []const u8, tty_fd:
         alloc,
         "/tmp/claude-pager-render-{d}.txt",
         .{std.c.getpid()},
-    ) catch return;
-    defer alloc.free(render_path);
+    ) catch return null;
+    errdefer alloc.free(render_path);
 
     render_plain.renderPlain(alloc, transcript, render_path, cols, CTX_LIMIT) catch {
         log.dbg("plain render failed for {s}", .{transcript});
-        return;
+        alloc.free(render_path);
+        return null;
     };
 
     // Null-terminate both for setenv.
@@ -186,57 +186,36 @@ pub fn maybeRenderTranscript(alloc: std.mem.Allocator, home: []const u8, tty_fd:
     @memcpy(key_buf[0.."CLAUDE_PAGER_RENDER_FILE".len], "CLAUDE_PAGER_RENDER_FILE");
     key_buf["CLAUDE_PAGER_RENDER_FILE".len] = 0;
 
-    const val_z = alloc.dupeZ(u8, render_path) catch return;
+    const val_z = alloc.dupeZ(u8, render_path) catch {
+        alloc.free(render_path);
+        return null;
+    };
     defer alloc.free(val_z);
 
     _ = setenv(@ptrCast(&key_buf), val_z.ptr, 1);
     log.dbg("rendered transcript to {s} (cols={d})", .{ render_path, cols });
+    return render_path;
 }
 
-// ── Pre-render: instant initial frame ───────────────────────────────────────
+// ── Static summary print ─────────────────────────────────────────────────────
 
-/// Draw a minimal "Editor open" frame so the user sees something instantly.
-/// Mirrors pre_render (C line 322).
-fn preRender(tty_fd: std.posix.fd_t) void {
-    const ws = term.getWinsize(tty_fd);
-    const ws_col: usize = if (ws.cols == 0) 100 else ws.cols;
-    const ws_row: usize = if (ws.rows == 0) 24 else ws.rows;
-    const cols = if (ws_col < 120) ws_col else 120;
+/// Write the rendered transcript at `render_path` to /dev/tty once, as plain
+/// static text — no alternate screen, no mouse, no input loop. The terminal's
+/// own scrollback handles long output. Best effort; silent on any failure.
+fn printSummary(alloc: std.mem.Allocator, render_path: []const u8) void {
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
 
-    var buf: [16384]u8 = undefined;
-    var w = std.Io.Writer.fixed(&buf);
-    w.writeAll("\x1b[2J\x1b[H") catch return;
-    var i: usize = 0;
-    while (i < cols) : (i += 1) w.writeAll("\x1b[38;2;80;80;80m\xe2\x94\x80") catch break;
-    w.writeAll("\x1b[0m\n") catch {};
-    var r: usize = 0;
-    while (r + 4 < ws_row) : (r += 1) w.writeByte('\n') catch break;
-    i = 0;
-    while (i < cols) : (i += 1) w.writeAll("\x1b[38;2;80;80;80m\xe2\x94\x80") catch break;
-    w.writeAll("\x1b[0m\n") catch {};
-    w.writeAll("\x1b[1;33m  Editor open \xe2\x80\x94 edit and close to send\x1b[0m") catch {};
+    const text = std.Io.Dir.cwd().readFileAlloc(io, render_path, alloc, .unlimited) catch return;
+    defer alloc.free(text);
+    if (text.len == 0) return;
 
-    const out = w.buffered();
-    _ = std.c.write(tty_fd, out.ptr, out.len);
-}
+    const tty_fd = term.openTty() catch return;
+    defer _ = std.c.close(tty_fd);
 
-// ── Fork the pager child ────────────────────────────────────────────────────
-
-/// Fork a child that opens /dev/tty, pre-renders, and runs the pager watching
-/// `watch_pid`. Returns the child's pid in the parent. NO control_fd — the
-/// external editor Ctrl+Q close protocol is removed. Mirrors fork_pager (C line 347).
-pub fn forkPager(transcript: []const u8, watch_pid: std.posix.pid_t, ctx_limit: usize) !std.posix.pid_t {
-    const pid = fork();
-    if (pid < 0) return error.ForkFailed;
-    if (pid == 0) {
-        // Child.
-        const tty_fd = term.openTty() catch std.c._exit(0);
-        preRender(tty_fd);
-        pager.runPager(tty_fd, transcript, watch_pid, ctx_limit) catch {};
-        _ = std.c.close(tty_fd);
-        std.c._exit(0);
-    }
-    return pid;
+    _ = std.c.write(tty_fd, text.ptr, text.len);
+    if (text[text.len - 1] != '\n') _ = std.c.write(tty_fd, "\n", 1);
 }
 
 // ── Editor spawn / exec ─────────────────────────────────────────────────────
@@ -285,7 +264,9 @@ pub fn terminalEditorPath(
     file: []const u8,
 ) !u8 {
     log.dbg("terminal editor, exec without pager", .{});
-    maybeRenderTranscript(alloc, home, -1);
+    // Render context for inline-aware editors. The TUI editor takes over the
+    // terminal, so there is no static summary print here.
+    if (maybeRenderTranscript(alloc, home, -1)) |p| alloc.free(p);
 
     const cmd = try std.fmt.allocPrintSentinel(alloc, "exec {s} \"$1\"", .{editor}, 0);
     defer alloc.free(cmd);
@@ -297,13 +278,13 @@ pub fn terminalEditorPath(
     return 127;
 }
 
-// ── Generic (GUI) editor path: editor + pager, with TUI auto-detection ──────
+// ── Generic (GUI) editor path: editor + static summary, TUI auto-detection ──
 
-/// GUI editor flow: optionally render context, spawn the editor, fork the pager
-/// watching the editor pid, wait for the editor, then reap the pager. Unknown
-/// editors get the "optimistic" probe: if the editor exits within ~150ms it is
-/// reclassified as a TUI and re-launched via terminalEditorPath.
-/// Mirrors generic_editor_path (C line 756).
+/// GUI editor flow: render context (exported to the editor + printed once as a
+/// static summary to the terminal), spawn the editor, and wait. Unknown editors
+/// get the "optimistic" probe: if the editor exits within ~150ms it is
+/// reclassified as a TUI and re-launched via terminalEditorPath (which does not
+/// print a summary, since the TUI owns the terminal).
 pub fn genericEditorPath(
     alloc: std.mem.Allocator,
     home: []const u8,
@@ -318,51 +299,46 @@ pub fn genericEditorPath(
     };
     const known_gui = editorm.isKnownGuiEditor(editor);
 
-    // Resolve the transcript once for the pager child.
-    const transcript = (findTranscript(alloc, home) catch null);
-    defer if (transcript) |t| alloc.free(t);
-    const transcript_s: []const u8 = transcript orelse "";
-
     if (forced_gui or known_gui) {
-        // Editor may show context inline (e.g. Emacs); render before forking so
+        // Editor may show context inline (e.g. Emacs); render before spawning so
         // the editor child inherits CLAUDE_PAGER_RENDER_FILE.
-        maybeRenderTranscript(alloc, home, -1);
+        const render_path = maybeRenderTranscript(alloc, home, -1);
+        defer if (render_path) |p| alloc.free(p);
 
         const ed_pid = spawnEditor(alloc, editor, file, false) catch return 1;
-        log.dbg("fast GUI path: editor forked pid={d}", .{ed_pid});
+        log.dbg("GUI path: editor forked pid={d}", .{ed_pid});
 
-        const pager_pid: std.posix.pid_t = forkPager(transcript_s, ed_pid, CTX_LIMIT) catch -1;
-        log.dbg("pager forked pid={d}", .{pager_pid});
+        // Print the static summary to the terminal (no interactive pager).
+        if (render_path) |p| printSummary(alloc, p);
 
         const status = waitBlocking(ed_pid);
         log.dbg("editor exited status={d}", .{status});
-
-        reapPager(pager_pid);
         return 0;
     }
 
-    // Unknown editor: optimistic launch + 150ms probe to detect TUIs.
+    // Unknown editor: render context first, then optimistic launch + 150ms probe.
+    const render_path = maybeRenderTranscript(alloc, home, -1);
+    defer if (render_path) |p| alloc.free(p);
+
     const ed_pid = spawnEditor(alloc, editor, file, true) catch return 1;
     log.dbg("optimistic path: editor forked pid={d} (stdin detached)", .{ed_pid});
-
-    const pager_pid: std.posix.pid_t = forkPager(transcript_s, ed_pid, CTX_LIMIT) catch -1;
-    log.dbg("pager forked pid={d}", .{pager_pid});
 
     var i: usize = 0;
     while (i < 15) : (i += 1) {
         sleepMs(10);
         if (std.c.waitpid(ed_pid, null, std.c.W.NOHANG) == ed_pid) {
             log.dbg("optimistic probe: editor exited in {d}ms — TUI detected", .{(i + 1) * 10});
-            reapPager(pager_pid);
             log.dbg("re-launching as TUI editor (exec with tty)", .{});
             return terminalEditorPath(alloc, home, editor, file);
         }
     }
 
     log.dbg("optimistic probe: editor alive after 150ms — GUI confirmed", .{});
+    // GUI confirmed — safe to print the static summary now.
+    if (render_path) |p| printSummary(alloc, p);
+
     const status = waitBlocking(ed_pid);
     log.dbg("editor exited status={d}", .{status});
-    reapPager(pager_pid);
     return 0;
 }
 
@@ -371,14 +347,6 @@ fn waitBlocking(pid: std.posix.pid_t) c_int {
     var status: c_int = 0;
     _ = std.c.waitpid(pid, &status, 0);
     return status;
-}
-
-/// Terminate and reap the pager child (if it was forked).
-fn reapPager(pager_pid: std.posix.pid_t) void {
-    if (pager_pid > 0) {
-        std.posix.kill(pager_pid, std.posix.SIG.TERM) catch {};
-        _ = std.c.waitpid(pager_pid, null, 0);
-    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

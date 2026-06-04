@@ -1,104 +1,32 @@
 # claude-pager
 
-A scrollable terminal pager for Claude Code session transcripts. Press **Ctrl-G** in Claude Code and your conversation history renders in the terminal while your GUI editor is open.
+Shows your Claude Code session transcript when you press **Ctrl-G**, instead of a blank terminal, and hands the same context to your editor so you can write your next prompt with the conversation in front of you.
 
-claude-pager solves two major Ctrl-G pain points:
-
-- Claude Code’s TUI going blank while an external GUI editor is open
-- Broken Cmd-click behavior on long wrapped links in terminal output
-
-It does this with a native pager + OSC-8 hyperlinks, so wrapped URLs and file paths stay clickable.
+It does this without touching the terminal: the transcript is printed once as static plain text. There is **no interactive pager** — no mouse capture, no scroll hijacking, no clickable-link rewriting — so your terminal's native scrollback and text selection keep working exactly as they do in normal Claude Code.
 
 The runtime is a single compiled Zig binary — no Python, no Node, no runtime dependencies.
 
-## Before vs After: clickable links and file paths
+## What it does
 
-<table>
-  <tr>
-    <td align="center"><strong>Before</strong></td>
-    <td align="center"><strong>After (claude-pager)</strong></td>
-  </tr>
-  <tr>
-    <td><img src="assets/readme/osc8-before.png" alt="Before: raw, hard-to-click links and file paths in terminal output" width="460"></td>
-    <td><img src="assets/readme/osc8-after.png" alt="After: shortened clickable OSC-8 links and file paths in claude-pager" width="460"></td>
-  </tr>
-</table>
+When you press **Ctrl-G** in Claude Code:
 
-<sub>claude-pager shortens and wraps links and file paths into clickable OSC-8 hyperlinks, and keeps mouse scrolling just like regular Claude Code session context.</sub>
+1. `claude-pager-open` (configured as Claude's `editor`) finds your session transcript.
+2. It renders the transcript to plain text and exports the path as `CLAUDE_PAGER_RENDER_FILE` so the editor can show it as context.
+3. It launches your configured editor.
+4. For GUI editors it prints the rendered transcript **once, statically** to the terminal as a read-only summary, then waits for the editor to close.
 
-## What's New in v2
-
-<img src="assets/readme/v2-overview.svg" alt="claude-pager v2 overview with transcript rendering, built-in prompt composer, queue editing, and clickable links" width="100%">
-
-- **Built-in queued prompt composer** right inside the pager, so Ctrl-G no longer means read-only transcript context
-- **Multiline prompt drafting** with **Shift+Enter**, plus queue cycle/edit/remove controls
-- **Clipboard + drag/drop attachments** that turn pasted files and images into `@/absolute/path` references
-- **Interactive terminal ergonomics**: scroll wheel browsing, click/Cmd-click links, and Shift-drag text selection
-
-## Install (quick start)
-
-### One-liner
-
-```sh
-curl -sSL https://raw.githubusercontent.com/gradigit/claude-pager/main/install.sh | bash
-```
-
-This clones the repo to `~/.claude-pager`, builds the binary, sets the `editor` in `~/.claude/settings.json`, preserves your original editor as `env.CLAUDE_PAGER_EDITOR`, writes `env.CLAUDE_PAGER_EDITOR_TYPE` (`tui`/`gui`), and installs the required Claude hooks for transcript lookup + queued prompt draining. No shell config changes needed.
-
-### AI agent install
-
-Paste the repo URL into Claude Code or any AI coding agent. The [agent instructions](#agent-instructions) below have everything it needs to install and configure claude-pager automatically.
-
-Important: Claude hook entries must use hook-group objects with a nested `hooks` array. Flat hook objects like `{"type":"command","command":"..."}` directly under `hooks.SessionStart` or `hooks.Stop` are invalid in current Claude releases.
-
-### Prebuilt binaries
-
-If you don't want to compile locally, download the latest release assets from the GitHub releases page:
-
-- `claude-pager-<version>-macos-arm64.tar.gz` (Apple Silicon)
-- `claude-pager-<version>-macos-x86_64.tar.gz` (Intel)
-- `checksums.txt`
-
-Then verify:
-
-```sh
-shasum -a 256 -c checksums.txt
-```
-
-Extract the archive and use `zig-out/bin/claude-pager-open` as your Claude Code editor path.
-
-## ⚡ Performance
-
-claude-pager is tuned for low-latency Ctrl-G flow, with instrumented timings from a production benchmark run (52 cycles total, 2 warmup excluded, 50 measured).
-
-### claude-pager internal rendering timings
-
-| Component | Median |
-| --- | ---: |
-| Claude Code exec overhead | **6.3ms** |
-| claude-pager first draw | **2.7ms** |
-| Terminal-ready probe | **0.04ms** |
-
-claude-pager itself is extremely fast; most remaining end-to-end latency is outside claude-pager (external editor + window rendering path).
+That's the whole flow. No alternate screen, no input loop, no background process redrawing the terminal.
 
 ## Features
 
-- Keeps your terminal transcript visible while GUI editors are open (no blank Ctrl-G screen)
-- Scrollable viewport with mouse wheel and keyboard navigation
+- Replaces the blank Ctrl-G terminal with a static, readable transcript summary
+- Hands the rendered transcript to your editor via `CLAUDE_PAGER_RENDER_FILE` (single source of truth)
 - Markdown rendering: headings, bold, inline code, code blocks, lists
-- GFM-style table rendering with bounded row/column budgets for predictable performance
+- GFM-style table rendering with bounded row/column budgets
 - Diff coloring (+green / -red / @@cyan)
-- Context usage bar showing token consumption
-- OSC-8 hyperlink rendering so long wrapped links remain easy to open
-- OSC-8 file/path hyperlink rendering so local paths are easy to open
-- Boxed multiline prompt composer is active by default while browsing transcript
-- Composer auto-wraps and expands vertically for longer prompts
-- File/image path references auto-prepended as `@/absolute/path` when pasted into queue input
-- `Ctrl+V` in queue input can attach clipboard files (Finder copy) and clipboard images as `@` references
-- Drag-and-drop file paths into queue input are accepted as `@` references
-- Terminal resize support (SIGWINCH)
-- Works with any GUI editor (VS Code, Cursor, Zed, Sublime, etc.)
-- Queue draining is handled by the shipped Claude Stop hook so queued prompts continue automatically
+- Leaves native terminal scrollback, mouse selection, and link handling untouched
+- First-class Emacs integration (transcript-above-prompt buffer)
+- Works with any GUI editor (VS Code, Cursor, Zed, Sublime, etc.) and any TUI editor (vim, nvim, emacs, …)
 
 ## Requirements
 
@@ -106,20 +34,31 @@ claude-pager itself is extremely fast; most remaining end-to-end latency is outs
 - [Zig](https://ziglang.org/) 0.16.0
 - `jq` (installed automatically via Homebrew if missing)
 
-## Build from source (manual)
+## Install
+
+### One-liner
 
 ```sh
-git clone https://github.com/gradigit/claude-pager.git
-cd claude-pager
-zig build                          # debug build
-zig build -Doptimize=ReleaseFast   # optimized release build
+curl -sSL https://raw.githubusercontent.com/velppa/claude-pager/zig-rewrite/install.sh | bash
 ```
 
-This produces `zig-out/bin/claude-pager-open` and `zig-out/bin/claude-pager-c` (zero runtime dependencies). The editor launch always uses `CLAUDE_PAGER_EDITOR` / `VISUAL` / `EDITOR`.
+This clones the repo to `~/.claude-pager`, builds the binary, sets `editor` in `~/.claude/settings.json`, preserves your original editor as `env.CLAUDE_PAGER_EDITOR`, writes `env.CLAUDE_PAGER_EDITOR_TYPE` (`tui`/`gui`), and installs the SessionStart hook used for transcript lookup. No shell config changes needed.
+
+### Build from source
+
+```sh
+git clone https://github.com/velppa/claude-pager.git
+cd claude-pager
+zig build                          # debug build
+zig build -Doptimize=ReleaseSmall  # optimized release build (installer default)
+zig build test                     # run the test suite
+```
+
+This produces `zig-out/bin/claude-pager-open` (zero runtime dependencies).
 
 ## Setup
 
-The installer handles everything automatically. If you installed manually:
+The installer handles everything automatically. If you set it up manually:
 
 ### 1. Set the editor in settings.json
 
@@ -135,14 +74,13 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
-Claude Code sets `editor` as the binary it spawns on Ctrl-G. Since `env` values may not be exported to the editor process, claude-pager reads `~/.claude/settings.json` directly for `env.CLAUDE_PAGER_EDITOR` and `env.CLAUDE_PAGER_EDITOR_TYPE`.
+Claude Code spawns `editor` on Ctrl-G. Since `env` values may not be exported to the editor process, claude-pager reads `~/.claude/settings.json` directly for `env.CLAUDE_PAGER_EDITOR` and `env.CLAUDE_PAGER_EDITOR_TYPE`.
 
-### 2. Install the required hooks
+### 2. Install the SessionStart hook
 
-claude-pager uses two Claude hooks:
+claude-pager uses a single Claude hook:
 
-- **SessionStart** → remembers the exact transcript for the current terminal session
-- **Stop** → drains the next queued prompt from the session queue so prompt queuing continues automatically
+- **SessionStart** → remembers the exact transcript for the current terminal session, so the right transcript is found even when multiple Claude sessions run from the same directory.
 
 Add to `~/.claude/settings.json`:
 
@@ -158,25 +96,16 @@ Add to `~/.claude/settings.json`:
           }
         ]
       }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/claude-pager/shim/queue-drain-stop.sh",
-            "timeout": 10
-          }
-        ]
-      }
     ]
   }
 }
 ```
 
-Without the SessionStart hook, the pager falls back to the most recent transcript in your project directory. Without the Stop hook, the queued prompt composer UI still appears, but queued prompts will not auto-drain back into Claude after the current response completes.
+Without the SessionStart hook, claude-pager falls back to the most recent transcript in your project directory.
 
-## Switching Editors
+> Claude hook entries must use hook-group objects with a nested `hooks` array. Flat hook objects like `{"type":"command","command":"..."}` directly under `hooks.SessionStart` are invalid in current Claude releases.
+
+## Switching editors
 
 Your editor is stored in `env.CLAUDE_PAGER_EDITOR` in `~/.claude/settings.json`. Change it to switch editors:
 
@@ -199,47 +128,74 @@ Common values:
 | Sublime Text | `subl --wait` |
 | Vim | `vim` |
 | Neovim | `nvim` |
+| Emacs | `emacsclient` (see below) |
 
 The resolution order is: `CLAUDE_PAGER_EDITOR` (env or settings.json) → `VISUAL` → `EDITOR` → system default (`open -W -t`).
 
-TUI editors (vim, nvim, emacs, nano, etc.) are exec'd directly without the pager. GUI editors are forked with the pager running alongside.
+TUI editors (vim, nvim, emacs, nano, …) take over the terminal, so they are exec'd directly and the static summary is **not** printed (the editor owns the screen; it gets the transcript via `CLAUDE_PAGER_RENDER_FILE` instead). GUI editors run alongside the static summary.
 
-You can force the path with `CLAUDE_PAGER_EDITOR_TYPE=tui` or `CLAUDE_PAGER_EDITOR_TYPE=gui` in the `env` section (read from env or settings.json).
+You can force the path with `CLAUDE_PAGER_EDITOR_TYPE=tui` or `CLAUDE_PAGER_EDITOR_TYPE=gui` in the `env` section.
 
-## Key Bindings
+## Emacs Integration
 
-| Key | Action |
+If you run Emacs as a server (`emacsclient`), claude-pager ships a dedicated Emacs prompt editor: the session transcript is shown **read-only** above a separator in an Emacs buffer, and you type your next prompt **below** it. On finish, only the text below the separator is sent back to Claude.
+
+This is a TUI flow — Emacs runs in the same terminal, so there is no static summary print; the transcript lives in the Emacs buffer instead.
+
+The integration is two files under `emacs/`:
+
+| File | Role |
 | --- | --- |
-| Scroll wheel | Scroll up/down |
-| Click / Cmd-click | Open hovered OSC-8 link or file path |
-| Shift-drag | Select transcript text while mouse interactions stay enabled |
-| Arrow keys (in composer) | Move caret and edit wrapped prompt text |
-| Page Up/Down | Scroll one page |
-| Home / End (in composer) | Jump caret to start / end |
-| Shift+Up / Shift+Down | Cycle queued prompts and load selected one for editing |
-| Shift+Enter (in composer) | Insert a newline into the queued prompt |
-| Ctrl+D (in input mode) | Remove selected queued prompt |
-| Ctrl+V (in input mode) | Attach clipboard file/image as `@/absolute/path` reference |
-| Enter (in input mode) | Queue prompt or update the selected queued prompt |
-| Esc (in input mode) | Restore stashed draft or clear current input text |
-| Mouse / Page Up / Page Down | Browse transcript while input stays active |
-| Ctrl+Q | Quit the pager and return to Claude Code |
+| `emacs/claude-emacs-prompt` | Editor shim. Resolves the transcript, arms the Emacs side via `emacsclient -e`, then opens the prompt file with `emacsclient`. |
+| `emacs/claude-prompt.el` | Emacs library. Renders the transcript read-only above `claude-prompt-separator`, forces Fundamental mode (no markdown fontification), and on save writes only the body below the separator. |
 
-## How It Works
+### Setup
 
-When you press Ctrl-G in Claude Code:
+1. Load the library from your Emacs config (`init.el`):
 
-1. Claude Code opens an alt screen and spawns the editor shim
-2. The binary finds your session transcript via a tty-keyed temp file (~0.1ms)
-3. It launches your configured editor via `CLAUDE_PAGER_EDITOR` / `VISUAL` / `EDITOR`
-4. It forks and renders the pager (~3ms for pre-render, ~5ms for full transcript)
-5. Your editor opens the file — the pager is already visible
-6. Queued prompts are persisted to a session-scoped queue file while you work in the pager composer
-7. The shipped Claude Stop hook drains queued prompts back into Claude after each response completes
-8. On `Ctrl+Q`: the pager quits cleanly and returns control to Claude Code
-9. On editor close: the binary kills the pager and returns control to Claude Code
+   ```elisp
+   (load "~/.claude-pager/emacs/claude-prompt.el" nil t)
+   ```
 
-The pager keeps mouse interactions enabled for scroll-wheel browsing, link activation, and Shift-drag text selection.
+   It hooks `server-switch-hook`, so any prompt file opened by the shim becomes the transcript-above-prompt editor automatically.
+
+2. Point `CLAUDE_PAGER_EDITOR` at the shim in `~/.claude/settings.json`:
+
+   ```json
+   {
+     "editor": "/path/to/claude-pager-open",
+     "env": {
+       "CLAUDE_PAGER_EDITOR": "/Users/you/.claude-pager/emacs/claude-emacs-prompt",
+       "CLAUDE_PAGER_EDITOR_TYPE": "tui"
+     }
+   }
+   ```
+
+   `CLAUDE_PAGER_EDITOR_TYPE` must be `tui` so claude-pager execs Emacs directly.
+
+3. Make sure an Emacs server is running (`M-x server-start`, or `(server-start)` in your config). The shim talks to it via `emacsclient`; sockets are resolved from `DARWIN_USER_TEMP_DIR` on macOS.
+
+### Usage
+
+Press **Ctrl-G** in Claude Code. Emacs opens the prompt buffer with the transcript above the separator line:
+
+```
+=== TRANSCRIPT (read-only) ===
+
+▶ USER
+...
+◀ ASSISTANT
+...
+
+----->8=----- TYPE PROMPT BELOW – text above is read-only context -----
+<your prompt goes here>
+```
+
+Type below the separator and finish with **`C-c C-c`** (saves the body and returns control to Claude). Everything above the separator is dropped on save, so Claude receives only what you typed.
+
+### Transcript source
+
+The shim prefers the plain-text render produced by `claude-pager-open` (via `CLAUDE_PAGER_RENDER_FILE`), keeping a single source of truth. If that is absent, it falls back to the tty-keyed transcript pointer (`/tmp/claude-transcript-<tty>`) written by the SessionStart hook, and finally to the most recent `.jsonl` in the project directory — which `claude-prompt.el` then renders itself.
 
 ## Architecture
 
@@ -247,12 +203,20 @@ The pager keeps mouse interactions enabled for scroll-wheel browsing, link activ
 claude-pager-open (Zig binary)
 ├── Editor resolution (CLAUDE_PAGER_EDITOR from env/settings.json → VISUAL → EDITOR → system default)
 ├── TUI detection (known TUI list + optional CLAUDE_PAGER_EDITOR_TYPE override + optimistic unknown-editor probe)
-├── Editor launch path (fork editor + fork pager + waitpid)
+├── Transcript lookup (tty-keyed temp file → PWD-derived project dir → newest jsonl)
 ├── Transcript parser (minimal JSON scanner, single-pass JSONL)
-├── Markdown renderer (ANSI escape codes)
-├── Scrollable viewport (raw terminal mode, keyboard/mouse input)
-└── Recursion guard (_CLAUDE_PAGER_ACTIVE env var)
+├── Plain-text renderer (markdown → ANSI → stripped plain text)
+├── Editor launch (spawn editor, export CLAUDE_PAGER_RENDER_FILE, wait)
+└── Static summary print (rendered transcript written once to /dev/tty for GUI editors)
 ```
+
+Source layout under `src/`:
+
+- `main_open.zig` / `open.zig` / `editor.zig` — entry point, editor resolution, launch orchestration, static summary print
+- `transcript.zig` — JSONL parser
+- `render.zig` / `markdown.zig` — markdown-to-ANSI line rendering
+- `render_plain.zig` — strips ANSI/OSC to the plain-text summary shared with editors
+- `settings.zig`, `term.zig`, `ansi.zig`, `outbuf.zig`, `log.zig` — settings, terminal, escape codes, buffering, debug logging
 
 ## Agent Instructions
 
@@ -270,9 +234,8 @@ command -v jq >/dev/null 2>&1 || brew install jq
 ### 2. Clone and build
 
 ```sh
-git clone https://github.com/gradigit/claude-pager.git ~/.claude-pager
-( cd ~/.claude-pager && zig build -Doptimize=ReleaseFast )
-# verify binary exists
+git clone https://github.com/velppa/claude-pager.git ~/.claude-pager
+( cd ~/.claude-pager && zig build -Doptimize=ReleaseSmall )
 test -x ~/.claude-pager/zig-out/bin/claude-pager-open
 ```
 
@@ -283,14 +246,13 @@ Read `~/.claude/settings.json` (create with `{}` if missing). Use `jq` to:
 1. Save the current `editor` value as `env.CLAUDE_PAGER_EDITOR` (if it exists and isn't already claude-pager)
 2. Set `editor` to the binary path
 3. Infer `env.CLAUDE_PAGER_EDITOR_TYPE` (`tui` or `gui`)
-4. Add the SessionStart + Stop hooks
+4. Add the SessionStart hook
 
-Important: Claude hooks must use wrapped hook-group objects with nested `hooks` arrays. Do not write legacy flat command objects directly under `hooks.SessionStart` or `hooks.Stop`.
+Important: Claude hooks must use wrapped hook-group objects with nested `hooks` arrays. Do not write legacy flat command objects directly under `hooks.SessionStart`.
 
 ```sh
 BINARY="$HOME/.claude-pager/bin/claude-pager-open"
 HOOK_SESSION="$HOME/.claude-pager/shim/save-session-transcript.sh"
-STOP_HOOK="$HOME/.claude-pager/shim/queue-drain-stop.sh"
 SETTINGS="$HOME/.claude/settings.json"
 
 mkdir -p "$(dirname "$SETTINGS")"
@@ -333,13 +295,7 @@ jq '
         if (type == "object" and (.hooks? | type) == "array") then
           .
         elif (type == "object" and .type == "command" and (.command? | type) == "string") then
-          {hooks: [(
-            if has("timeout") then
-              {type, command, timeout}
-            else
-              {type, command}
-            end
-          )]}
+          {hooks: [(if has("timeout") then {type, command, timeout} else {type, command} end)]}
         else
           .
         end
@@ -348,76 +304,37 @@ jq '
       []
     end;
   .hooks = (if (.hooks | type) == "object" then .hooks else {} end) |
-  .hooks.SessionStart = ((.hooks.SessionStart // []) | normalize_event_array) |
-  .hooks.Stop = ((.hooks.Stop // []) | normalize_event_array)
+  .hooks.SessionStart = ((.hooks.SessionStart // []) | normalize_event_array)
 ' "$SETTINGS" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
 
 # Add SessionStart hook (if not already present)
 if ! jq -e --arg cmd "$HOOK_SESSION" '.hooks.SessionStart[]?.hooks[]? | select(.command == $cmd)' "$SETTINGS" &>/dev/null; then
     jq --arg cmd "$HOOK_SESSION" '
         .hooks.SessionStart = ((.hooks.SessionStart // []) + [{
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": $cmd
-                }
-            ]
-        }])
-    ' "$SETTINGS" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
-fi
-
-# Add Stop hook (if not already present)
-if ! jq -e --arg cmd "$STOP_HOOK" '.hooks.Stop[]?.hooks[]? | select(.command == $cmd)' "$SETTINGS" &>/dev/null; then
-    jq --arg cmd "$STOP_HOOK" '
-        .hooks.Stop = ((.hooks.Stop // []) + [{
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": $cmd,
-                    "timeout": 10
-                }
-            ]
+            "hooks": [ { "type": "command", "command": $cmd } ]
         }])
     ' "$SETTINGS" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
 fi
 
 # Validate final hook shape
-jq -e --arg session_cmd "$HOOK_SESSION" --arg stop_cmd "$STOP_HOOK" '
+jq -e --arg session_cmd "$HOOK_SESSION" '
   (.hooks.SessionStart | type) == "array" and
   any(.hooks.SessionStart[]?; (.hooks | type) == "array") and
-  any(.hooks.SessionStart[]?.hooks[]?; (.type == "command") and (.command == $session_cmd)) and
-  (.hooks.Stop | type) == "array" and
-  any(.hooks.Stop[]?; (.hooks | type) == "array") and
-  any(.hooks.Stop[]?.hooks[]?; (.type == "command") and (.command == $stop_cmd) and ((.timeout // 10) == 10))
+  any(.hooks.SessionStart[]?.hooks[]?; (.type == "command") and (.command == $session_cmd))
 ' "$SETTINGS" >/dev/null
 ```
 
 ### 4. Done
 
-Tell the user to restart Claude Code and press **Ctrl-G**. The pager will render their conversation transcript while the editor is open.
+Tell the user to restart Claude Code and press **Ctrl-G**. The transcript summary prints in the terminal and the editor opens with the same context.
 
 ### Agent notes
 
 - Editor resolution: `CLAUDE_PAGER_EDITOR` (env or settings.json) → `VISUAL` → `EDITOR` → `open -W -t` (macOS default)
 - `CLAUDE_PAGER_EDITOR_TYPE` is also read from env or settings.json (`tui`/`gui` override)
-- The SessionStart hook enables multi-session transcript lookup; without it the pager falls back to the most recent transcript in the project directory
-- The Stop hook drains queued prompts from the session queue back into Claude after each completed response
-- `_CLAUDE_PAGER_ACTIVE` env var is set internally to prevent recursion — agents do not need to set this
+- The SessionStart hook enables multi-session transcript lookup; without it claude-pager falls back to the most recent transcript in the project directory
+- There is no Stop hook — the prompt queue was removed. If an older install left a `queue-drain-stop.sh` Stop hook, remove it from `~/.claude/settings.json` manually.
 - No shell config changes (VISUAL/EDITOR) are needed — settings.json is the canonical configuration path
-
-## Development
-
-```sh
-git clone https://github.com/gradigit/claude-pager.git
-cd claude-pager
-zig build                          # builds claude-pager-open + claude-pager-c
-zig build -Doptimize=ReleaseFast   # optimized release build
-zig build test                     # runs the test suite
-```
-
-Builds produce `zig-out/bin/claude-pager-open` and `zig-out/bin/claude-pager-c`.
-
-The Zig source lives in `src/`: `src/main_open.zig` / `src/open.zig` / `src/editor.zig` handle editor resolution and fork/launch orchestration, while `src/pager.zig`, `src/render.zig`, `src/render_plain.zig`, `src/draw.zig`, and `src/markdown.zig` handle transcript parsing and rendering.
 
 ## License
 

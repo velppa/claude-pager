@@ -22,7 +22,6 @@
 const std = @import("std");
 const ansi = @import("ansi.zig");
 const markdown = @import("markdown.zig");
-const links = @import("links.zig");
 const transcript = @import("transcript.zig");
 
 pub const Line = []u8; // one rendered terminal line, may contain ANSI/OSC-8.
@@ -44,18 +43,7 @@ const table_max_cols_default = 8;
 /// Render all items to a flat list of styled lines for `cols` columns.
 /// Lines are owned by `alloc` (use an arena, or free each line + the slice).
 pub fn renderItems(alloc: std.mem.Allocator, items: []const transcript.Item, cols: usize) ![]Line {
-    return renderItemsSpans(alloc, items, cols, null);
-}
-
-/// Like `renderItems`, but records OSC-8 link click-spans into `spans` when
-/// non-null. The `row` recorded per span is the output line index at emit time.
-pub fn renderItemsSpans(
-    alloc: std.mem.Allocator,
-    items: []const transcript.Item,
-    cols: usize,
-    spans: ?*std.ArrayListUnmanaged(links.LinkSpan),
-) ![]Line {
-    var l = Lines{ .alloc = alloc, .cols = cols, .spans = spans };
+    var l = Lines{ .alloc = alloc, .cols = cols };
     errdefer l.deinitOnError();
     try l.renderAll(items);
     return l.out.toOwnedSlice(alloc);
@@ -67,7 +55,6 @@ const Lines = struct {
     alloc: std.mem.Allocator,
     cols: usize,
     out: std.ArrayListUnmanaged([]u8) = .empty,
-    spans: ?*std.ArrayListUnmanaged(links.LinkSpan) = null,
 
     fn deinitOnError(self: *Lines) void {
         for (self.out.items) |it| self.alloc.free(it);
@@ -101,22 +88,11 @@ const Lines = struct {
         }
     }
 
-    /// L_pushw_link (bin/pager.c:2673): linkify `s` first if it contains a URL
-    /// or path or an existing OSC-8 sequence, then push with wrap handling.
+    /// Was L_pushw_link (bin/pager.c:2673): used to wrap URLs/paths in OSC-8
+    /// hyperlinks. Link rendering was removed (no clickable-URL rewriting), so
+    /// this is now a plain wrapped push. Kept as a named alias for call sites.
     fn pushwLink(self: *Lines, s: []const u8) !void {
-        if (std.mem.indexOf(u8, s, "http://") == null and
-            std.mem.indexOf(u8, s, "https://") == null and
-            std.mem.indexOf(u8, s, "~/") == null and
-            std.mem.indexOf(u8, s, "/") == null and
-            std.mem.indexOf(u8, s, "\x1b]8;;") == null)
-        {
-            try self.pushw(s);
-            return;
-        }
-        const row = self.out.items.len; // best-effort row for span recording.
-        const linked = try links.linkify(self.alloc, s, self.cols, row, self.spans);
-        defer self.alloc.free(linked);
-        try self.pushw(linked);
+        try self.pushw(s);
     }
 
     // ── render_items (bin/pager.c:4828) ─────────────────────────────────────
@@ -677,33 +653,19 @@ fn fitCell(dst: []u8, src: []const u8, width: usize) []u8 {
     return dst[0 .. n + 1];
 }
 
-// md_cell_label (bin/pager.c:3658): shorten URLs/paths before fitting.
+// md_cell_label (bin/pager.c:3658): fit a table cell to `width`. URL/path
+// shortening was removed with link rendering; long cells hard-truncate.
 fn cellLabel(a: std.mem.Allocator, dst: []u8, src: []const u8, width: usize) ![]u8 {
-    if (src.len > width) {
-        if ((src.len >= 8 and std.mem.eql(u8, src[0..8], "https://")) or
-            (src.len >= 7 and std.mem.eql(u8, src[0..7], "http://")))
-        {
-            const sh = try links.shortenUrl(a, src, 256);
-            defer a.free(sh);
-            return fitCell(dst, sh, width);
-        }
-        if (src.len > 0 and (src[0] == '/' or (src.len >= 2 and src[0] == '~' and src[1] == '/'))) {
-            const sh = try links.shortenPath(a, src, 256);
-            defer a.free(sh);
-            return fitCell(dst, sh, width);
-        }
-    }
+    _ = a;
     return fitCell(dst, src, width);
 }
 
-// md_cell_target (bin/pager.c:3641): returns the OSC-8 target URI for a cell
-// (URL verbatim, or file-URI for absolute / ~/ paths). Empty = no link.
+// md_cell_target (bin/pager.c:3641): previously returned an OSC-8 target URI
+// for clickable table cells. Link rendering was removed, so there is never a
+// target — always empty (no link).
 fn cellTarget(a: std.mem.Allocator, src: []const u8) ![]u8 {
-    if (src.len == 0) return a.dupe(u8, "");
-    if (src.len >= 8 and std.mem.eql(u8, src[0..8], "https://")) return a.dupe(u8, src);
-    if (src.len >= 7 and std.mem.eql(u8, src[0..7], "http://")) return a.dupe(u8, src);
-    if (!(src[0] == '/' or (src.len >= 2 and src[0] == '~' and src[1] == '/'))) return a.dupe(u8, "");
-    return links.buildFileUriTarget(a, src);
+    _ = src;
+    return a.dupe(u8, "");
 }
 
 // Render a markdown table starting at `header_line`. Returns true if a table was
