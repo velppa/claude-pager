@@ -462,7 +462,7 @@ fn isWrapPlaceholder(s: []const u8) bool {
 
 var g_resize = std.atomic.Value(u8).init(0);
 
-fn onWinch(_: c_int) callconv(.c) void {
+fn onWinch(_: std.c.SIG) callconv(.c) void {
     g_resize.store(1, .seq_cst);
 }
 
@@ -573,7 +573,7 @@ pub fn runPager(
     while (true) {
         // Editor liveness.
         if (st.editor_pid) |pid| {
-            std.posix.kill(pid, 0) catch break;
+            if (std.c.kill(pid, @enumFromInt(0)) != 0) break;
         }
 
         // Resize.
@@ -671,9 +671,9 @@ fn readFile(a: std.mem.Allocator, path: []const u8) ![]u8 {
 fn writeAll(fd: std.posix.fd_t, bytes: []const u8) bool {
     var off: usize = 0;
     while (off < bytes.len) {
-        const w = std.posix.write(fd, bytes[off..]) catch return false;
-        if (w == 0) return false;
-        off += w;
+        const w = std.c.write(fd, bytes[off..].ptr, bytes[off..].len);
+        if (w <= 0) return false;
+        off += @intCast(w);
     }
     return true;
 }
@@ -685,7 +685,12 @@ fn installWinch() void {
 }
 
 fn sleepMs(ms: u64) void {
-    std.Thread.sleep(ms * std.time.ns_per_ms);
+    const ns = ms * std.time.ns_per_ms;
+    const ts = std.c.timespec{
+        .sec = @intCast(ns / std.time.ns_per_s),
+        .nsec = @intCast(ns % std.time.ns_per_s),
+    };
+    _ = std.c.nanosleep(&ts, null);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
