@@ -8,4 +8,5 @@ test {
     _ = @import("render_plain.zig");
     _ = @import("outbuf.zig");
     _ = @import("log.zig");
+    _ = @import("term.zig");
 }
