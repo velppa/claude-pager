@@ -126,7 +126,7 @@ verbatim; otherwise render TRANSCRIPT-PATH (.jsonl) ourselves."
       (add-hook 'write-contents-functions #'claude-prompt--write-body nil t)
       (local-set-key (kbd "C-c C-c") #'claude-prompt-finish)
       (setq-local header-line-format
-                  "Claude prompt — type below separator, finish with `C-c C-c'")
+                  "Claude prompt — type below separator, finish with C-c C-c")
       (claude-prompt--goto-body)
       ;; server may reposition point to top after this hook; re-assert.
       (run-at-time 0 nil

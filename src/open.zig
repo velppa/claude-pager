@@ -199,20 +199,25 @@ pub fn maybeRenderTranscript(alloc: std.mem.Allocator, home: []const u8, tty_fd:
 
 // ── Static summary print ─────────────────────────────────────────────────────
 
-/// Write the rendered transcript at `render_path` to /dev/tty once, as plain
-/// static text — no alternate screen, no mouse, no input loop. The terminal's
-/// own scrollback handles long output. Best effort; silent on any failure.
-fn printSummary(alloc: std.mem.Allocator, render_path: []const u8) void {
-    var threaded = std.Io.Threaded.init(alloc, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    const text = std.Io.Dir.cwd().readFileAlloc(io, render_path, alloc, .unlimited) catch return;
-    defer alloc.free(text);
-    if (text.len == 0) return;
+/// Render the newest transcript to COLORED static text and write it to /dev/tty
+/// once — no alternate screen, no mouse, no input loop, so the terminal's native
+/// scrollback/selection stay intact. Re-parses the transcript (the editor file
+/// is rendered separately, color-stripped, by `maybeRenderTranscript`). Best
+/// effort; silent on any failure.
+fn printSummary(alloc: std.mem.Allocator, home: []const u8) void {
+    const transcript = (findTranscript(alloc, home) catch null) orelse return;
+    defer alloc.free(transcript);
 
     const tty_fd = term.openTty() catch return;
     defer _ = std.c.close(tty_fd);
+
+    var cols: usize = 100;
+    const ws = term.getWinsize(tty_fd);
+    if (ws.cols > 0) cols = if (ws.cols < 120) ws.cols else 120;
+
+    const text = render_plain.renderColored(alloc, transcript, cols, CTX_LIMIT) catch return;
+    defer alloc.free(text);
+    if (text.len == 0) return;
 
     _ = std.c.write(tty_fd, text.ptr, text.len);
     if (text[text.len - 1] != '\n') _ = std.c.write(tty_fd, "\n", 1);
@@ -309,7 +314,7 @@ pub fn genericEditorPath(
         log.dbg("GUI path: editor forked pid={d}", .{ed_pid});
 
         // Print the static summary to the terminal (no interactive pager).
-        if (render_path) |p| printSummary(alloc, p);
+        if (render_path != null) printSummary(alloc, home);
 
         const status = waitBlocking(ed_pid);
         log.dbg("editor exited status={d}", .{status});
@@ -335,7 +340,7 @@ pub fn genericEditorPath(
 
     log.dbg("optimistic probe: editor alive after 150ms — GUI confirmed", .{});
     // GUI confirmed — safe to print the static summary now.
-    if (render_path) |p| printSummary(alloc, p);
+    if (render_path != null) printSummary(alloc, home);
 
     const status = waitBlocking(ed_pid);
     log.dbg("editor exited status={d}", .{status});

@@ -57,6 +57,15 @@ fn isWrapPlaceholder(ln: []const u8) bool {
     return std.mem.eql(u8, ln, ansi.wrap_placeholder);
 }
 
+/// Format the context-usage status line, e.g. "ctx 6%  12k/200k". Plain text,
+/// safe for both the terminal summary and the inline-editor render file.
+/// Mirrors the old pager footer status (draw.zig `drawStatus`).
+pub fn ctxLine(alloc: std.mem.Allocator, token_count: usize, pct: f64, ctx_limit: usize) ![]u8 {
+    const tok_k = @as(f64, @floatFromInt(token_count)) / 1000.0;
+    const lim_k = ctx_limit / 1000;
+    return std.fmt.allocPrint(alloc, "ctx {d:.0}%  {d:.0}k/{d}k", .{ pct, tok_k, lim_k });
+}
+
 /// Read the transcript at `transcript_path`, render it at `cols`/`ctx_limit`,
 /// strip + rtrim each non-wrap-placeholder line, and write line+'\n' to
 /// `out_path`. Parity with C `pager_render_plain` (bin/pager.c:6021-6068).
@@ -84,6 +93,7 @@ pub fn renderPlain(
 
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(a);
+
     for (lines) |ln| {
         if (isWrapPlaceholder(ln)) continue;
         const stripped = try stripAnsi(a, ln);
@@ -91,7 +101,60 @@ pub fn renderPlain(
         try out.append(a, '\n');
     }
 
+    // Plain context-usage line at the bottom, after a blank separator, so it
+    // stays visible near the prompt instead of scrolling off the top.
+    const cline = try ctxLine(a, tr.token_count, tr.pct, ctx_limit);
+    try out.append(a, '\n');
+    try out.appendSlice(a, cline);
+    try out.append(a, '\n');
+
     try cwd.writeFile(io, .{ .sub_path = out_path, .data = out.items });
+}
+
+/// Render the transcript at `transcript_path` to a freshly-allocated buffer of
+/// COLORED text — ANSI CSI color is kept (URLs/OSC-8 are already absent from the
+/// render output), prefixed with a colored context-usage line. Caller owns and
+/// frees the result. Used for the static terminal summary; the inline-editor
+/// file uses `renderPlain` (color-stripped) instead.
+pub fn renderColored(
+    alloc: std.mem.Allocator,
+    transcript_path: []const u8,
+    cols: usize,
+    ctx_limit: usize,
+) ![]u8 {
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const jsonl = try cwd.readFileAlloc(io, transcript_path, alloc, .unlimited);
+    defer alloc.free(jsonl);
+
+    var tr = try transcript.parse(alloc, jsonl, ctx_limit);
+    defer tr.deinit();
+    const a = tr.arena.allocator();
+    const lines = try render.renderItems(a, tr.items, cols);
+
+    // Build into the CALLER's allocator so the result outlives `tr.deinit()`.
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(alloc);
+
+    for (lines) |ln| {
+        if (isWrapPlaceholder(ln)) continue;
+        try out.appendSlice(alloc, rtrim(ln));
+        try out.append(alloc, '\n');
+    }
+
+    // Colored context-usage line at the bottom, after a blank separator, so it
+    // stays visible near the prompt instead of scrolling off the top.
+    const cline = try ctxLine(a, tr.token_count, tr.pct, ctx_limit);
+    try out.append(alloc, '\n');
+    try out.appendSlice(alloc, ansi.c_hdm);
+    try out.appendSlice(alloc, cline);
+    try out.appendSlice(alloc, ansi.reset);
+    try out.append(alloc, '\n');
+
+    return out.toOwnedSlice(alloc);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -148,6 +211,45 @@ test "stripAnsi removes CSI and keeps OSC-8 visible text" {
     const in = "\x1b[1;32mgreen\x1b[0m \x1b]8;;https://x.test\x07click\x1b]8;;\x07!";
     const got = try stripAnsi(a, in);
     try std.testing.expectEqualStrings("green click!", got);
+}
+
+test "ctxLine formats percent and k tokens" {
+    const a = std.testing.allocator;
+    const s = try ctxLine(a, 12345, 6.17, 200000);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("ctx 6%  12k/200k", s);
+}
+
+test "ctxLine zero usage" {
+    const a = std.testing.allocator;
+    const s = try ctxLine(a, 0, 0, 200000);
+    defer a.free(s);
+    try std.testing.expectEqualStrings("ctx 0%  0k/200k", s);
+}
+
+test "renderColored prefixes colored context line and keeps color" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const in_path = try std.fs.path.join(a, &.{ ".zig-cache", "tmp", &tmp.sub_path, "in.jsonl" });
+    defer a.free(in_path);
+
+    const jsonl =
+        \\{"type":"user","message":{"role":"user","content":"hello"}}
+        \\{"type":"assistant","message":{"role":"assistant","usage":{"input_tokens":100,"cache_read_input_tokens":80},"content":[{"type":"text","text":"hi there"}]}}
+        \\
+    ;
+    try tmp.dir.writeFile(io, .{ .sub_path = "in.jsonl", .data = jsonl });
+
+    const out = try renderColored(a, in_path, 80, 200000);
+    defer a.free(out);
+    // Ends with the colored "ctx ..." status line (bottom of the dump).
+    try std.testing.expect(std.mem.endsWith(u8, out, ansi.reset ++ "\n"));
+    try std.testing.expect(std.mem.indexOf(u8, out, ansi.c_hdm ++ "ctx ") != null);
+    // Color is preserved in the body too (an ESC before the status line).
+    try std.testing.expect(std.mem.indexOfScalar(u8, out, 0x1b) != null);
 }
 
 test "renderPlain file round-trip produces non-empty, no trailing whitespace" {
