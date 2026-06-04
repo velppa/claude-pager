@@ -21,10 +21,12 @@ For more details see https://example.com/markdown-guide
 
 Here is a small JSON snippet:
 
-│ {
-│   "name": "alice",
-│   "greeting": "hello world",
-│   "count": 42
-│ }
+```json
+{
+  "name": "alice",
+  "greeting": "hello world",
+  "count": 42
+}
+```
 
 The renderer draws a │ rail on the left of fenced code blocks.

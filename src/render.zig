@@ -441,24 +441,24 @@ fn renderMdImpl(l: *Lines, text: []const u8, keep_tail_lines: usize) !void {
         const line = try sanitizeLineView(a, raw);
         defer if (line.ptr != raw.ptr) a.free(line);
 
-        // Code fence toggle (bin/pager.c:3811): ``` at line start.
+        // Code fence line (bin/pager.c:3811): ``` at line start. Toggle the
+        // in-code state and EMIT the fence verbatim (dimmed) so code blocks stay
+        // wrapped in literal ``` fences — language tag preserved — rather than
+        // collapsing to a │ rail. ANSI-stripped (Emacs) this is plain "```lang".
         if (line.len >= 3 and line[0] == '`' and line[1] == '`' and line[2] == '`') {
             in_code = !in_code;
+            try pushFmt(l, &.{ ansi.c_sep, line, ansi.reset });
             continue;
         }
 
         if (in_code) {
-            // C_SEP VL RS C_CBG C_CFG " %s%*s" RS  (pad = g_cols-6-vl)
-            const vl_len = line.len; // strlen(line)
-            const pad: usize = if (cols >= 6 + vl_len) cols - 6 - vl_len else 0;
+            // Code line: code bg/fg, padded to full width. No │ rail and no
+            // leading space, so ANSI-stripped it is the verbatim source line.
+            const pad: usize = if (cols > line.len) cols - line.len else 0;
             var b: std.ArrayListUnmanaged(u8) = .empty;
             defer b.deinit(a);
-            try b.appendSlice(a, ansi.c_sep);
-            try b.appendSlice(a, ansi.vl);
-            try b.appendSlice(a, ansi.reset);
             try b.appendSlice(a, ansi.c_cbg);
             try b.appendSlice(a, ansi.c_cfg);
-            try b.append(a, ' ');
             try b.appendSlice(a, line);
             try b.appendNTimes(a, ' ', pad);
             try b.appendSlice(a, ansi.reset);
@@ -1494,22 +1494,31 @@ test "human first line uses chevron prefix" {
     try std.testing.expectEqualStrings(" \xe2\x80\xba hello", plain);
 }
 
-test "fenced code block uses the vertical rail" {
+test "fenced code block keeps fences and drops the vertical rail" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const aa = arena.allocator();
-    const md = "```\ncode here\n```";
+    const md = "```json\ncode here\n```";
     const items = [_]transcript.Item{
         .{ .type = .assistant, .text = @constCast(md), .label = null, .is_err = false },
     };
     const lines = try renderItems(aa, &items, 100);
-    // blank-once, then one code line.
-    var found = false;
+    var saw_open = false;
+    var saw_close = false;
+    var saw_code = false;
     for (lines) |ln| {
         const plain = try plainLine(aa, ln);
-        if (std.mem.eql(u8, plain, ansi.vl ++ " code here")) found = true;
+        var end = plain.len;
+        while (end > 0 and plain[end - 1] == ' ') end -= 1;
+        const t = plain[0..end];
+        // No │ rail anywhere (this snippet has no table).
+        try std.testing.expect(std.mem.indexOf(u8, t, ansi.vl) == null);
+        if (std.mem.eql(u8, t, "```json")) saw_open = true;
+        if (std.mem.eql(u8, t, "```")) saw_close = true;
+        if (std.mem.eql(u8, t, "code here")) saw_code = true;
     }
-    try std.testing.expect(found);
+    // Opening fence keeps its language tag; closing fence is bare ```.
+    try std.testing.expect(saw_open and saw_close and saw_code);
 }
 
 test "sample1 renders byte-identical to plain golden" {

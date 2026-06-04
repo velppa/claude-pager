@@ -11,11 +11,13 @@ The directory contains one file: example.txt. It is empty (0 bytes).
 
 Here is a shell script to create a sample file:
 
-│ #!/usr/bin/env bash
-│ # Create a sample file with some content
-│ cat > /tmp/example/example.txt <<'EOF'
-│ hello from alice
-│ EOF
-│ echo done
+```bash
+#!/usr/bin/env bash
+# Create a sample file with some content
+cat > /tmp/example/example.txt <<'EOF'
+hello from alice
+EOF
+echo done
+```
 
 You can also check the Unicode support: 世界 means "world" in Chinese.
