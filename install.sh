@@ -82,11 +82,23 @@ fi
 
 # ── Build ────────────────────────────────────────────────────────────────────
 echo "Building..."
-make -C "${INSTALL_DIR}/bin" clean
-make -C "${INSTALL_DIR}/bin"
+( cd "$INSTALL_DIR" && zig build -Doptimize=ReleaseFast )
+
+BUILD_OPEN="${INSTALL_DIR}/zig-out/bin/claude-pager-open"
+BUILD_CLI="${INSTALL_DIR}/zig-out/bin/claude-pager-c"
+
+if [[ ! -x "$BUILD_OPEN" || ! -x "$BUILD_CLI" ]]; then
+    echo "ERROR: build failed — expected binaries not found in ${INSTALL_DIR}/zig-out/bin" >&2
+    exit 1
+fi
+
+# Install built binaries into ${INSTALL_DIR}/bin
+mkdir -p "${INSTALL_DIR}/bin"
+install -m 0755 "$BUILD_OPEN" "$BINARY"
+install -m 0755 "$BUILD_CLI" "${INSTALL_DIR}/bin/claude-pager-c"
 
 if [[ ! -x "$BINARY" ]]; then
-    echo "ERROR: build failed — $BINARY not found" >&2
+    echo "ERROR: install failed — $BINARY not found" >&2
     exit 1
 fi
 echo "Built: $BINARY"

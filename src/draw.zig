@@ -11,8 +11,8 @@
 //! (separator + Queue(n) header + item list + input box), the status line and
 //! the hotkeys footer.
 //!
-//! TurboDraft coupling (control_fd / g_ctrl_quit_supported) is NOT ported. The
-//! Ctrl+Q footer hint is shown unconditionally as a plain "^Q quit".
+//! External editor-session coupling (control_fd / g_ctrl_quit_supported) is NOT
+//! ported. The Ctrl+Q footer hint is shown unconditionally as a plain "^Q quit".
 //!
 //! Glyphs/escapes come from `ansi.zig`; the input box layout from
 //! `input.InputBuf.layout`; visible-length math is byte-count (ansi.visibleLen).
@@ -326,8 +326,8 @@ fn footerEmitStyled(ob: *OutBuf, style: []const u8, text: []const u8, used: *usi
     try ob.write(ansi.c_qbg);
 }
 
-// draw_hotkeys_footer (bin/pager.c:5139). The TurboDraft-gated "^Q close" hint is
-// replaced by an unconditional plain "^Q quit".
+// draw_hotkeys_footer (bin/pager.c:5139). The previously session-gated "^Q close"
+// hint is replaced by an unconditional plain "^Q quit".
 fn drawHotkeysFooter(ob: *OutBuf, st: *State) !void {
     try ob.write(ansi.c_qbg);
     if (st.cols < 2) {

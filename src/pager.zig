@@ -4,9 +4,9 @@
 //! dispatcher (mutates `State`, returns an `Action`) so the loop's core can be
 //! unit-tested without a tty.
 //!
-//! ⚠️ The external TurboDraft coupling is REMOVED: `runPager` takes NO
+//! ⚠️ The external editor-session coupling is REMOVED: `runPager` takes NO
 //! control_fd, there is no `g_ctrl_quit_supported`, and Ctrl+Q simply requests a
-//! clean quit (`Action.quit`). No "TurboDraft" text is emitted anywhere.
+//! clean quit (`Action.quit`).
 //!
 //! Deviations from the full C loop (reported, see the task's escalation clause):
 //!  - SGR mouse handling (hover, click-to-open) is NOT ported into the loop:
@@ -212,9 +212,9 @@ pub const State = struct {
 
     /// handleKey — dispatch one decoded key. Mutates state; returns the Action
     /// the loop should take. Mirrors the input-mode / scroll-mode split of
-    /// run_pager (bin/pager.c:5724-5962), minus mouse/TurboDraft.
+    /// run_pager (bin/pager.c:5724-5962), minus mouse and external coupling.
     pub fn handleKey(self: *State, key: input.Key) Action {
-        // Ctrl+Q always quits (no TurboDraft close; clean teardown in the loop).
+        // Ctrl+Q simply quits (no external session coupling; clean teardown in the loop).
         switch (key) {
             .ctrl => |c| {
                 if (c == 'q') return .quit;
@@ -468,7 +468,7 @@ fn onWinch(_: std.c.SIG) callconv(.c) void {
 
 // ── runPager — the interactive loop (run_pager, bin/pager.c:5533-5989) ───────
 
-/// Run the interactive pager on `tty_fd`. NO control_fd (TurboDraft removed).
+/// Run the interactive pager on `tty_fd`. NO control_fd (external coupling removed).
 /// `editor_pid`, when set, is polled for liveness — the loop exits when the
 /// editor process is gone (the C's `kill(editor_pid,0) != 0` check).
 pub fn runPager(

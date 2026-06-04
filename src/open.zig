@@ -1,7 +1,7 @@
 //! open.zig — the editor-launcher core for claude-pager-open.
 //!
-//! Ports these sections from bin/claude-pager-open.c. The TurboDraft fast path
-//! and all Unix-socket / control_fd code are intentionally NOT ported:
+//! Ports these sections from bin/claude-pager-open.c. The external editor socket
+//! fast path and all Unix-socket / control_fd code are intentionally NOT ported:
 //!   newest_jsonl            (line 237) → newestJsonl
 //!   find_transcript         (line 260) → findTranscript
 //!   maybe_render_transcript (line 699) → maybeRenderTranscript
@@ -224,7 +224,7 @@ fn preRender(tty_fd: std.posix.fd_t) void {
 
 /// Fork a child that opens /dev/tty, pre-renders, and runs the pager watching
 /// `watch_pid`. Returns the child's pid in the parent. NO control_fd — the
-/// TurboDraft Ctrl+Q close protocol is removed. Mirrors fork_pager (C line 347).
+/// external editor Ctrl+Q close protocol is removed. Mirrors fork_pager (C line 347).
 pub fn forkPager(transcript: []const u8, watch_pid: std.posix.pid_t, ctx_limit: usize) !std.posix.pid_t {
     const pid = fork();
     if (pid < 0) return error.ForkFailed;

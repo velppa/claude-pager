@@ -26,15 +26,17 @@ These are **SYNTHETIC** (hand-crafted, no private data) transcript fixtures used
 
 ## How goldens were generated
 
-```bash
-cd bin && make && cd ..
-tests/gen_golden.sh
-```
+These golden `*.plain.txt` files are **FROZEN** reference output. They were
+originally generated from the now-removed C build (recoverable from git history)
+at **cols=110**, **ctx_limit=200000**.
 
-Parameters: **cols=110**, **ctx_limit=200000**.
-
-The script compiles a tiny driver against `bin/pager.o`, calls `pager_render_plain()` for each `sampleN.jsonl`, and writes `sampleN.plain.txt`. `tests/gen_golden.sh` requires `bin/pager.o` to exist (produced by `cd bin && make`).
+The generator script that originally produced these files has been deleted along
+with the C sources, so the goldens are no longer regenerated — they are checked
+in as fixed reference output.
 
 ## Zig port contract
 
-The Zig port must reproduce each `*.plain.txt` **byte-for-byte** from its corresponding `*.jsonl` at cols=110, ctx_limit=200000. Run `tests/gen_golden.sh` to regenerate goldens from the C build if the C renderer changes.
+The Zig renderer's tests assert **byte-identical** output against each
+`*.plain.txt`, rendering from its corresponding `*.jsonl` at cols=110,
+ctx_limit=200000. If the Zig renderer's output diverges from these frozen
+goldens, the tests fail.

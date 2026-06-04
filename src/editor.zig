@@ -6,8 +6,6 @@
 //!   editor_basename  (line 649) — extract the basename token of an editor command
 //!   is_known_gui_editor (line 655) — is it a known GUI editor
 //!   is_terminal_editor  (line 674) — is it a terminal (TUI) editor
-//!
-//! NOTE: is_turbodraft_editor is intentionally NOT ported — it is being removed.
 
 const std = @import("std");
 

@@ -1,7 +1,7 @@
 //! main_open.zig — entrypoint for `claude-pager-open`, the editor shim.
 //!
-//! Ports main() from bin/claude-pager-open.c:832 MINUS the TurboDraft socket
-//! fast path. Resolves the editor (settings.json → VISUAL → EDITOR), guards
+//! Ports main() from bin/claude-pager-open.c:832 MINUS the external editor
+//! socket fast path. Resolves the editor (settings.json → VISUAL → EDITOR), guards
 //! against self-recursion, then dispatches to the terminal- or GUI-editor path.
 
 const std = @import("std");

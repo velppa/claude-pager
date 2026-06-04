@@ -7,9 +7,9 @@ claude-pager solves two major Ctrl-G pain points:
 - Claude Code’s TUI going blank while an external GUI editor is open
 - Broken Cmd-click behavior on long wrapped links in terminal output
 
-It does this with a native C pager + OSC-8 hyperlinks, so wrapped URLs and file paths stay clickable.
+It does this with a native pager + OSC-8 hyperlinks, so wrapped URLs and file paths stay clickable.
 
-The runtime is a single compiled C binary — no Python, no Node, no runtime dependencies.
+The runtime is a single compiled Zig binary — no Python, no Node, no runtime dependencies.
 
 ## Before vs After: clickable links and file paths
 
@@ -28,12 +28,11 @@ The runtime is a single compiled C binary — no Python, no Node, no runtime dep
 
 ## What's New in v2
 
-<img src="assets/readme/v2-overview.svg" alt="claude-pager v2 overview with transcript rendering, built-in prompt composer, queue editing, clickable links, and TurboDraft fast path" width="100%">
+<img src="assets/readme/v2-overview.svg" alt="claude-pager v2 overview with transcript rendering, built-in prompt composer, queue editing, and clickable links" width="100%">
 
 - **Built-in queued prompt composer** right inside the pager, so Ctrl-G no longer means read-only transcript context
 - **Multiline prompt drafting** with **Shift+Enter**, plus queue cycle/edit/remove controls
 - **Clipboard + drag/drop attachments** that turn pasted files and images into `@/absolute/path` references
-- **TurboDraft fast path** for low-latency session open/close over a direct Unix socket
 - **Interactive terminal ergonomics**: scroll wheel browsing, click/Cmd-click links, and Shift-drag text selection
 
 ## Install (quick start)
@@ -66,7 +65,7 @@ Then verify:
 shasum -a 256 -c checksums.txt
 ```
 
-Extract the archive and use `bin/claude-pager-open` as your Claude Code editor path.
+Extract the archive and use `zig-out/bin/claude-pager-open` as your Claude Code editor path.
 
 ## ⚡ Performance
 
@@ -80,23 +79,7 @@ claude-pager is tuned for low-latency Ctrl-G flow, with instrumented timings fro
 | claude-pager first draw | **2.7ms** |
 | Terminal-ready probe | **0.04ms** |
 
-### Ctrl-G flow timings (TurboDraft fast path)
-
-| Metric | Median | p95 |
-| --- | ---: | ---: |
-| Ctrl-G → editor window visible | **60.1ms** | **76.1ms** |
-| Cmd-Q → back to Claude Code | **53.1ms** | **61.3ms** |
-
-These Ctrl-G flow timings are measured with TurboDraft using claude-pager’s direct Unix-socket fast path. Other popular GUI editors go through the generic launch/wait path and typically do **not** hit sub-100ms Ctrl-G end-to-end flow timings.
-
 claude-pager itself is extremely fast; most remaining end-to-end latency is outside claude-pager (external editor + window rendering path).
-
-## ✨ Speed-of-thought editing with TurboDraft
-
-If you want the lowest-latency prompt editing feel, use [**TurboDraft**](https://github.com/gradigit/turbodraft) (the sister tool) with claude-pager.
-
-- claude-pager: fast transcript context + Ctrl-G flow
-- TurboDraft: near-instant editing experience once the editor is open
 
 ## Features
 
@@ -114,25 +97,25 @@ If you want the lowest-latency prompt editing feel, use [**TurboDraft**](https:/
 - `Ctrl+V` in queue input can attach clipboard files (Finder copy) and clipboard images as `@` references
 - Drag-and-drop file paths into queue input are accepted as `@` references
 - Terminal resize support (SIGWINCH)
-- Works with any GUI editor (TurboDraft, VS Code, Sublime, etc.)
-- TurboDraft fast path: talks directly to TurboDraft's Unix socket, bypassing shell overhead and handing off session-scoped queue metadata
+- Works with any GUI editor (VS Code, Cursor, Zed, Sublime, etc.)
 - Queue draining is handled by the shipped Claude Stop hook so queued prompts continue automatically
 
 ## Requirements
 
 - macOS (arm64 or x86_64)
-- A C compiler (Xcode Command Line Tools: `xcode-select --install`)
+- [Zig](https://ziglang.org/) 0.16.0
 - `jq` (installed automatically via Homebrew if missing)
 
 ## Build from source (manual)
 
 ```sh
 git clone https://github.com/gradigit/claude-pager.git
-cd claude-pager/bin
-make
+cd claude-pager
+zig build                          # debug build
+zig build -Doptimize=ReleaseFast   # optimized release build
 ```
 
-This produces `bin/claude-pager-open` (~70KB, zero dependencies).
+This produces `zig-out/bin/claude-pager-open` and `zig-out/bin/claude-pager-c` (zero runtime dependencies). The editor launch always uses `CLAUDE_PAGER_EDITOR` / `VISUAL` / `EDITOR`.
 
 ## Setup
 
@@ -240,32 +223,31 @@ You can force the path with `CLAUDE_PAGER_EDITOR_TYPE=tui` or `CLAUDE_PAGER_EDIT
 | Enter (in input mode) | Queue prompt or update the selected queued prompt |
 | Esc (in input mode) | Restore stashed draft or clear current input text |
 | Mouse / Page Up / Page Down | Browse transcript while input stays active |
-| Ctrl+Q | Close the active TurboDraft session immediately on the TurboDraft fast path |
+| Ctrl+Q | Quit the pager and return to Claude Code |
 
 ## How It Works
 
 When you press Ctrl-G in Claude Code:
 
 1. Claude Code opens an alt screen and spawns the editor shim
-2. The C binary finds your session transcript via a tty-keyed temp file (~0.1ms)
-3. If TurboDraft is available: connects to its socket and sends `session.open` (~0.02ms) with `cwd`, protocol version, and session-scoped queue metadata
-4. It forks and renders the pager directly in C (~3ms for pre-render, ~5ms for full transcript)
+2. The binary finds your session transcript via a tty-keyed temp file (~0.1ms)
+3. It launches your configured editor via `CLAUDE_PAGER_EDITOR` / `VISUAL` / `EDITOR`
+4. It forks and renders the pager (~3ms for pre-render, ~5ms for full transcript)
 5. Your editor opens the file — the pager is already visible
 6. Queued prompts are persisted to a session-scoped queue file while you work in the pager composer
 7. The shipped Claude Stop hook drains queued prompts back into Claude after each response completes
-8. On `Ctrl+Q` in the TurboDraft fast path: the pager requests `turbodraft.session.close` for the active session and waits for `turbodraft.session.wait`
-9. On close: once the session actually closes, the binary kills the pager and returns control to Claude Code
+8. On `Ctrl+Q`: the pager quits cleanly and returns control to Claude Code
+9. On editor close: the binary kills the pager and returns control to Claude Code
 
 The pager keeps mouse interactions enabled for scroll-wheel browsing, link activation, and Shift-drag text selection.
 
 ## Architecture
 
 ```
-claude-pager-open (C binary, ~70KB)
+claude-pager-open (Zig binary)
 ├── Editor resolution (CLAUDE_PAGER_EDITOR from env/settings.json → VISUAL → EDITOR → system default)
 ├── TUI detection (known TUI list + optional CLAUDE_PAGER_EDITOR_TYPE override + optimistic unknown-editor probe)
-├── TurboDraft socket client (JSON-RPC 2.0 over Unix domain socket)
-├── Generic editor path (fork editor + fork pager + waitpid)
+├── Editor launch path (fork editor + fork pager + waitpid)
 ├── Transcript parser (minimal JSON scanner, single-pass JSONL)
 ├── Markdown renderer (ANSI escape codes)
 ├── Scrollable viewport (raw terminal mode, keyboard/mouse input)
@@ -279,8 +261,8 @@ This section is for AI coding agents (Claude Code, Cursor, Copilot, etc.). Every
 ### 1. Check prerequisites
 
 ```sh
-# macOS required; ensure a C compiler is available
-xcode-select -p >/dev/null 2>&1 || xcode-select --install
+# macOS required; ensure Zig 0.16.0 is available
+command -v zig >/dev/null 2>&1 || { echo "install Zig 0.16.0 from https://ziglang.org/"; exit 1; }
 # jq required for settings.json manipulation
 command -v jq >/dev/null 2>&1 || brew install jq
 ```
@@ -289,9 +271,9 @@ command -v jq >/dev/null 2>&1 || brew install jq
 
 ```sh
 git clone https://github.com/gradigit/claude-pager.git ~/.claude-pager
-make -C ~/.claude-pager/bin
+( cd ~/.claude-pager && zig build -Doptimize=ReleaseFast )
 # verify binary exists
-test -x ~/.claude-pager/bin/claude-pager-open
+test -x ~/.claude-pager/zig-out/bin/claude-pager-open
 ```
 
 ### 3. Configure settings.json
@@ -416,7 +398,6 @@ Tell the user to restart Claude Code and press **Ctrl-G**. The pager will render
 
 ### Agent notes
 
-- The binary auto-detects TurboDraft's Unix socket — no special config needed for TurboDraft users
 - Editor resolution: `CLAUDE_PAGER_EDITOR` (env or settings.json) → `VISUAL` → `EDITOR` → `open -W -t` (macOS default)
 - `CLAUDE_PAGER_EDITOR_TYPE` is also read from env or settings.json (`tui`/`gui` override)
 - The SessionStart hook enables multi-session transcript lookup; without it the pager falls back to the most recent transcript in the project directory
@@ -428,14 +409,15 @@ Tell the user to restart Claude Code and press **Ctrl-G**. The pager will render
 
 ```sh
 git clone https://github.com/gradigit/claude-pager.git
-cd claude-pager/bin
-make            # builds claude-pager-open
-make clean      # removes build artifacts
+cd claude-pager
+zig build                          # builds claude-pager-open + claude-pager-c
+zig build -Doptimize=ReleaseFast   # optimized release build
+zig build test                     # runs the test suite
 ```
 
-The C source is in `bin/claude-pager-open.c` (editor resolution + socket + fork logic) and `bin/pager.c` (pager rendering).
+Builds produce `zig-out/bin/claude-pager-open` and `zig-out/bin/claude-pager-c`.
 
-The runtime is fully C-based: `bin/claude-pager-open.c` handles editor/session orchestration and `bin/pager.c` handles rendering.
+The Zig source lives in `src/`: `src/main_open.zig` / `src/open.zig` / `src/editor.zig` handle editor resolution and fork/launch orchestration, while `src/pager.zig`, `src/render.zig`, `src/render_plain.zig`, `src/draw.zig`, and `src/markdown.zig` handle transcript parsing and rendering.
 
 ## License
 
