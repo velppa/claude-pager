@@ -20,7 +20,7 @@ When set, its contents are used as the read-only context verbatim instead
 of rendering the .jsonl ourselves, keeping a single source of truth with the
 pager.")
 
-(defvar claude-prompt-separator
+(defconst claude-prompt-separator
   "----->8=----- TYPE PROMPT BELOW – text above is read-only context -----"
   "Marker line; everything below it is sent as the prompt.")
 
@@ -117,7 +117,8 @@ verbatim; otherwise render TRANSCRIPT-PATH (.jsonl) ourselves."
       (let ((start (point)))
         (insert header)
         (add-text-properties start (point)
-                             '(font-lock-face font-lock-comment-face)))
+                             '(font-lock-face font-lock-comment-face
+                               rear-nonsticky t)))
       ;; record where the user region begins
       (setq-local claude-prompt--body-start (copy-marker (point) nil))
       ;; restore any draft below the separator
@@ -125,8 +126,9 @@ verbatim; otherwise render TRANSCRIPT-PATH (.jsonl) ourselves."
       (set-buffer-modified-p nil)
       (add-hook 'write-contents-functions #'claude-prompt--write-body nil t)
       (local-set-key (kbd "C-c C-c") #'claude-prompt-finish)
+      (local-set-key (kbd "C-c C-k") #'claude-prompt-cancel)
       (setq-local header-line-format
-                  "Claude prompt — type below separator, finish with C-c C-c")
+                  "Claude prompt — type below separator, send with C-c C-c, cancel with C-c C-k")
       (claude-prompt--goto-body)
       ;; server may reposition point to top after this hook; re-assert.
       (run-at-time 0 nil
@@ -171,6 +173,14 @@ Falls back to the recorded marker, then point-min."
 Killing a server buffer marks the client done, so `emacsclient' returns."
   (interactive)
   (save-buffer)
+  (set-buffer-modified-p nil)
+  (kill-buffer))
+
+(defun claude-prompt-cancel ()
+  "Discard the prompt body and kill the buffer, sending nothing to Claude.
+Writes an empty file so `emacsclient' returns with no prompt text."
+  (interactive)
+  (write-region "" nil buffer-file-name nil 'quiet)
   (set-buffer-modified-p nil)
   (kill-buffer))
 
