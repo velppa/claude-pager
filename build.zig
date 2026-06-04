@@ -2,7 +2,11 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    // Default to ReleaseSmall (a terminal pager — favor small binaries).
+    // Override per build, e.g. `zig build -Doptimize=Debug`.
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
+    // Strip the shipped executables in any release build (no effect on Debug).
+    const strip = optimize != .Debug;
 
     const exe_open = b.addExecutable(.{
         .name = "claude-pager-open",
@@ -10,6 +14,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main_open.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = strip,
         }),
     });
     b.installArtifact(exe_open);
@@ -20,6 +25,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main_cli.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = strip,
         }),
     });
     b.installArtifact(exe_cli);
@@ -27,7 +33,9 @@ pub fn build(b: *std.Build) void {
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/tests.zig"),
         .target = target,
-        .optimize = optimize,
+        // Always run tests with full runtime safety, regardless of the
+        // executables' release default.
+        .optimize = .Debug,
     });
     // Expose transcript test fixtures to `@embedFile` (they live outside the
     // src/ package root, so they must be wired in as anonymous imports).

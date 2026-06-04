@@ -82,7 +82,7 @@ fi
 
 # ── Build ────────────────────────────────────────────────────────────────────
 echo "Building..."
-( cd "$INSTALL_DIR" && zig build -Doptimize=ReleaseFast )
+( cd "$INSTALL_DIR" && zig build -Doptimize=ReleaseSmall )
 
 BUILD_OPEN="${INSTALL_DIR}/zig-out/bin/claude-pager-open"
 BUILD_CLI="${INSTALL_DIR}/zig-out/bin/claude-pager-c"
