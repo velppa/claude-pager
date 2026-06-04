@@ -12,4 +12,5 @@ test {
     _ = @import("input.zig");
     _ = @import("queue_persist.zig");
     _ = @import("queue_clipboard.zig");
+    _ = @import("queue.zig");
 }
