@@ -9,4 +9,5 @@ test {
     _ = @import("outbuf.zig");
     _ = @import("log.zig");
     _ = @import("term.zig");
+    _ = @import("input.zig");
 }
