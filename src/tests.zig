@@ -13,4 +13,6 @@ test {
     _ = @import("queue_persist.zig");
     _ = @import("queue_clipboard.zig");
     _ = @import("queue.zig");
+    _ = @import("draw.zig");
+    _ = @import("pager.zig");
 }
