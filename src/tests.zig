@@ -10,4 +10,5 @@ test {
     _ = @import("log.zig");
     _ = @import("term.zig");
     _ = @import("input.zig");
+    _ = @import("queue_persist.zig");
 }
