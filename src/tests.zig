@@ -6,4 +6,6 @@ test {
     _ = @import("links.zig");
     _ = @import("render.zig");
     _ = @import("render_plain.zig");
+    _ = @import("outbuf.zig");
+    _ = @import("log.zig");
 }
