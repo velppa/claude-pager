@@ -17,4 +17,5 @@ test {
     _ = @import("pager.zig");
     _ = @import("settings.zig");
     _ = @import("editor.zig");
+    _ = @import("open.zig");
 }
