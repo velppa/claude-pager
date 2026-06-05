@@ -1,15 +1,15 @@
 //! editor.zig — Editor-command validation and GUI/terminal-editor detection.
 //!
-//! Ports the following functions from bin/claude-pager-open.c:
-//!   is_self          (line 600) — detect the editor being claude-pager-open itself
-//!   editor_exists    (line 610) — check the editor binary exists / is runnable
-//!   editor_basename  (line 649) — extract the basename token of an editor command
-//!   is_known_gui_editor (line 655) — is it a known GUI editor
-//!   is_terminal_editor  (line 674) — is it a terminal (TUI) editor
+//! Provides the following functions:
+//!   isSelf            — detect the editor being claude-pager-open itself
+//!   editorExists      — check the editor binary exists / is runnable
+//!   basename          — extract the basename token of an editor command
+//!   isKnownGuiEditor  — is it a known GUI editor
+//!   isTerminalEditor  — is it a terminal (TUI) editor
 
 const std = @import("std");
 
-/// Terminal (TUI) editors — matches tui_editors[] in the C reference (line 635).
+/// Terminal (TUI) editors — the list of editors that run inside the terminal.
 const tui_editors = [_][]const u8{
     "vi",       "vim",      "nvim",     "lvim",    "nvi",
     "vim.basic","vim.tiny", "vim.nox",  "vim.gtk", "vim.gtk3",
@@ -19,7 +19,7 @@ const tui_editors = [_][]const u8{
     "dte",      "mcedit",   "amp",
 };
 
-/// GUI editors — matches gui_editors[] in the C reference (line 643).
+/// GUI editors — the list of editors that open in a separate window.
 const gui_editors = [_][]const u8{
     "open",   "code",      "cursor",   "zed",      "subl",
     "bbedit", "mate",      "idea",     "webstorm", "pycharm",
@@ -63,7 +63,7 @@ fn firstToken(cmd: []const u8, buf: []u8) ?[]u8 {
 }
 
 /// Detect whether the editor command is claude-pager-open itself (avoids
-/// infinite recursion). Mirrors is_self() at line 600 of the C reference.
+/// infinite recursion).
 pub fn isSelf(cmd: []const u8) bool {
     var buf: [256]u8 = undefined;
     const tok = firstToken(cmd, &buf) orelse return false;
@@ -77,7 +77,6 @@ pub fn isSelf(cmd: []const u8) bool {
 
 /// Check that the editor binary exists and is executable.
 /// Handles both absolute paths and bare names (searched via PATH).
-/// Mirrors editor_exists() at line 610 of the C reference.
 pub fn editorExists(cmd: []const u8) bool {
     var buf: [256]u8 = undefined;
     const tok = firstToken(cmd, &buf) orelse return false;
@@ -113,7 +112,6 @@ pub fn editorExists(cmd: []const u8) bool {
 
 /// Extract the basename token of an editor command string into `buf`.
 /// Returns a slice into `buf`.
-/// Mirrors editor_basename() at line 649 of the C reference.
 pub fn basename(editor: []const u8, buf: []u8) []const u8 {
     var tok_buf: [256]u8 = undefined;
     const tok = firstToken(editor, &tok_buf) orelse return "";
@@ -127,7 +125,6 @@ pub fn basename(editor: []const u8, buf: []u8) []const u8 {
 }
 
 /// Return true if the editor is a known GUI editor.
-/// Mirrors is_known_gui_editor() at line 655 of the C reference.
 pub fn isKnownGuiEditor(editor: []const u8) bool {
     var buf: [256]u8 = undefined;
     const base = basename(editor, &buf);
@@ -140,7 +137,6 @@ pub fn isKnownGuiEditor(editor: []const u8) bool {
 
 /// Return true if the editor is a terminal (TUI) editor.
 /// Respects the CLAUDE_PAGER_EDITOR_TYPE env override ("tui" / "gui").
-/// Mirrors is_terminal_editor() at line 674 of the C reference.
 pub fn isTerminalEditor(editor: []const u8) bool {
     // Env override: CLAUDE_PAGER_EDITOR_TYPE=tui|gui
     if (getEnv("CLAUDE_PAGER_EDITOR_TYPE")) |override| {
@@ -169,7 +165,6 @@ fn isTerminalEditorName(base_name: []const u8) bool {
 
 test "terminal editor names in tui list" {
     // Test the classification lists directly, bypassing the env override.
-    // This mirrors the C tui_editors[] list (line 635).
     try std.testing.expect(isTerminalEditorName("nvim"));
     try std.testing.expect(isTerminalEditorName("vim"));
     try std.testing.expect(isTerminalEditorName("vi"));

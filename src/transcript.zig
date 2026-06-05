@@ -1,22 +1,16 @@
 //! Transcript data model and a newline-delimited JSON (.jsonl) parser.
 //!
-//! Ported from `bin/pager.c`'s `parse_transcript` (lines 3329-3494) and its
-//! helpers (`extract_text`, `lbl_keys`, `build_structured_patch_payload`,
-//! `extract_tool_use_result_meta`, `relabel_last_tool_use`). Replaces the
-//! hand-rolled JSON scanner (jfind/jstr/...) with Zig's `std.json`.
+//! Parses each line into an Item list (types, order, and exact text bytes)
+//! using Zig's `std.json`. The helpers handle text extraction, tool_use
+//! labeling, structured-patch payloads, and tool-result metadata.
 //!
-//! Fidelity target: the produced Item list (types, order, and exact text
-//! bytes) must match the C parser's *default* (non perf-compat) path, because
-//! a later renderer is compared byte-for-byte against the C output.
-//!
-//! Notable C behaviors replicated here:
-//!  - Thinking blocks are NOT emitted (C only handles "text" and "tool_use"
-//!    inside assistant content; bin/pager.c:3360-3408).
-//!  - In default mode text is trimmed (leading/trailing ' ' and '\n' only) but
-//!    NOT ANSI-sanitized (extract_text called with sanitize_out=0;
-//!    bin/pager.c:3363,3414,3456,3476).
-//!  - Malformed / non-message lines are skipped silently (C's jfind returns
-//!    NULL and the loop `continue`s; here a JSON parse error skips the line).
+//! Notable parsing behaviors:
+//!  - Thinking blocks are NOT emitted; only "text" and "tool_use" blocks
+//!    inside assistant content are handled.
+//!  - Text is trimmed (leading/trailing ' ' and '\n' only) but NOT
+//!    ANSI-sanitized.
+//!  - Malformed / non-message lines are skipped silently (a JSON parse error
+//!    skips the line).
 
 const std = @import("std");
 
@@ -31,8 +25,6 @@ pub const Item = struct {
 
 pub const Transcript = struct {
     items: []Item,
-    token_count: usize,
-    pct: f64,
     arena: std.heap.ArenaAllocator,
 
     pub fn deinit(self: *Transcript) void {
@@ -41,7 +33,6 @@ pub const Transcript = struct {
 };
 
 /// Keys probed, in order, to derive a tool_use label from its `input` object.
-/// Mirrors bin/pager.c:3089-3091 (`lbl_keys`).
 const lbl_keys = [_][]const u8{
     "command", "file_path", "path", "pattern", "query", "url", "content", "description",
 };
@@ -51,31 +42,23 @@ const ItemList = std.ArrayListUnmanaged(Item);
 /// Parses newline-delimited JSON `jsonl`. All returned strings are owned by the
 /// returned Transcript's arena (created from `backing`); free everything via
 /// `Transcript.deinit()`.
-pub fn parse(backing: std.mem.Allocator, jsonl: []const u8, ctx_limit: usize) !Transcript {
+pub fn parse(backing: std.mem.Allocator, jsonl: []const u8) !Transcript {
     var arena = std.heap.ArenaAllocator.init(backing);
     errdefer arena.deinit();
     const a = arena.allocator();
 
     var items: ItemList = .empty;
 
-    // Last-seen usage figures. C keeps the most recent value seen for each key
-    // across assistant messages (li/lcc/lcr persist and are overwritten),
-    // bin/pager.c:3337,3349-3354,3491-3492.
-    var li: i64 = 0;
-    var lcc: i64 = 0;
-    var lcr: i64 = 0;
-
     var line_it = std.mem.splitScalar(u8, jsonl, '\n');
     while (line_it.next()) |raw_line| {
-        // Strip trailing CR/LF (C: bin/pager.c:3340). splitScalar already
-        // removed the '\n'; drop a stray trailing '\r' (and any leftover).
+        // Strip trailing CR/LF. splitScalar already removed the '\n'; drop a
+        // stray trailing '\r' (and any leftover).
         var line = raw_line;
         while (line.len > 0 and (line[line.len - 1] == '\n' or line[line.len - 1] == '\r'))
             line = line[0 .. line.len - 1];
         if (line.len == 0) continue;
 
-        // Parse the line leniently. A malformed line is skipped (matches C,
-        // where jfind/jstr would simply fail to find the expected keys).
+        // Parse the line leniently. A malformed line is skipped.
         var parsed = std.json.parseFromSlice(std.json.Value, a, line, .{}) catch continue;
         defer parsed.deinit();
         const root = parsed.value;
@@ -89,16 +72,7 @@ pub fn parse(backing: std.mem.Allocator, jsonl: []const u8, ctx_limit: usize) !T
         const content = msg.get("content");
 
         if (std.mem.eql(u8, tv, "assistant")) {
-            // Accumulate usage tokens (bin/pager.c:3349-3354).
-            if (msg.get("usage")) |usg_val| {
-                if (usg_val == .object) {
-                    const usg = usg_val.object;
-                    if (getInt(usg.get("input_tokens"))) |v| li = v;
-                    if (getInt(usg.get("cache_creation_input_tokens"))) |v| lcc = v;
-                    if (getInt(usg.get("cache_read_input_tokens"))) |v| lcr = v;
-                }
-            }
-            // Content must be an array of blocks (bin/pager.c:3356).
+            // Content must be an array of blocks.
             const ct = content orelse continue;
             if (ct != .array) continue;
             for (ct.array.items) |block_val| {
@@ -112,15 +86,15 @@ pub fn parse(backing: std.mem.Allocator, jsonl: []const u8, ctx_limit: usize) !T
                 } else if (std.mem.eql(u8, bt, "tool_use")) {
                     try handleToolUse(a, &items, block);
                 }
-                // "thinking" and any other block type: ignored (C emits nothing).
+                // "thinking" and any other block type: ignored.
             }
         } else if (std.mem.eql(u8, tv, "user")) {
             const ct = content orelse continue;
             if (ct == .string) {
-                // Plain user text (bin/pager.c:3413-3416).
+                // Plain user text.
                 if (try extractText(a, ct)) |t| {
                     if (isSystag(t)) {
-                        // C frees it without pushing.
+                        // Dropped without pushing.
                     } else {
                         try items.append(a, .{ .type = .user, .text = t, .label = null, .is_err = false });
                     }
@@ -131,25 +105,14 @@ pub fn parse(backing: std.mem.Allocator, jsonl: []const u8, ctx_limit: usize) !T
         }
     }
 
-    const tot: i64 = li + lcc + lcr;
-    var token_count: usize = 0;
-    var pct: f64 = 0;
-    if (tot > 0) {
-        token_count = @intCast(tot);
-        pct = @as(f64, @floatFromInt(tot)) / @as(f64, @floatFromInt(ctx_limit)) * 100.0;
-    }
-
     return .{
         .items = try items.toOwnedSlice(a),
-        .token_count = token_count,
-        .pct = pct,
         .arena = arena,
     };
 }
 
-/// Replicates bin/pager.c:3365-3407 — build the display name + label for a
-/// tool_use block, including the Read / Edit / MultiEdit special cases and the
-/// 72-char label truncation.
+/// Build the display name + label for a tool_use block, including the
+/// Read / Edit / MultiEdit special cases and the 72-char label truncation.
 fn handleToolUse(a: std.mem.Allocator, items: *ItemList, block: std.json.ObjectMap) !void {
     const nm = getString(block.get("name")) orelse "?";
 
@@ -163,8 +126,7 @@ fn handleToolUse(a: std.mem.Allocator, items: *ItemList, block: std.json.ObjectM
     const inp: ?std.json.ObjectMap = if (inp_val != null and inp_val.? == .object) inp_val.?.object else null;
 
     if (inp) |input_obj| {
-        // First label candidate: first matching lbl_key whose value is a string
-        // (bin/pager.c:3374-3377).
+        // First label candidate: first matching lbl_key whose value is a string.
         var found = false;
         for (lbl_keys) |k| {
             if (getString(input_obj.get(k))) |lv| {
@@ -173,8 +135,8 @@ fn handleToolUse(a: std.mem.Allocator, items: *ItemList, block: std.json.ObjectM
                 break;
             }
         }
-        // Fallback: first key in the object whose value is a string
-        // (bin/pager.c:3378-3383). std.json preserves insertion order.
+        // Fallback: first key in the object whose value is a string.
+        // std.json preserves insertion order.
         if (!found) {
             var it = input_obj.iterator();
             if (it.next()) |entry| {
@@ -183,7 +145,7 @@ fn handleToolUse(a: std.mem.Allocator, items: *ItemList, block: std.json.ObjectM
         }
     }
 
-    // Read: "Read N lines" when input.limit > 0 (bin/pager.c:3385-3390).
+    // Read: "Read N lines" when input.limit > 0.
     if (asciiEqIgnoreCase(nm, "Read")) {
         if (inp) |input_obj| {
             const lim = getInt(input_obj.get("limit")) orelse 0;
@@ -194,7 +156,7 @@ fn handleToolUse(a: std.mem.Allocator, items: *ItemList, block: std.json.ObjectM
             }
         }
     } else if (asciiEqIgnoreCase(nm, "Edit") or asciiEqIgnoreCase(nm, "MultiEdit")) {
-        // Update(file_path) / Update (bin/pager.c:3391-3405).
+        // Update(file_path) / Update.
         if (inp) |input_obj| {
             var fpb: []const u8 = "";
             if (getString(input_obj.get("file_path"))) |fp| {
@@ -212,8 +174,7 @@ fn handleToolUse(a: std.mem.Allocator, items: *ItemList, block: std.json.ObjectM
         }
     }
 
-    // Truncate label to 72 chars with a "..." tail (bin/pager.c:3406):
-    //   lbl[69..72] = "...", lbl[72] = 0  -> first 69 bytes + "...".
+    // Truncate label to 72 chars with a "..." tail: first 69 bytes + "...".
     var lbl_owned: []u8 = undefined;
     if (lbl.len > 72) {
         lbl_owned = try a.alloc(u8, 72);
@@ -227,9 +188,8 @@ fn handleToolUse(a: std.mem.Allocator, items: *ItemList, block: std.json.ObjectM
     try items.append(a, .{ .type = .tool_use, .text = text, .label = lbl_owned, .is_err = false });
 }
 
-/// Replicates bin/pager.c:3417-3487 — user message whose content is an array:
-/// structuredPatch relabeling of the previous tool_use, then tool_result
-/// block extraction.
+/// Handle a user message whose content is an array: structuredPatch relabeling
+/// of the previous tool_use, then tool_result block extraction.
 fn handleUserArray(
     a: std.mem.Allocator,
     items: *ItemList,
@@ -244,7 +204,7 @@ fn handleUserArray(
     var sp_payload: ?[]u8 = try buildStructuredPatchPayload(a, tur, &sp_add, &sp_del);
     var sp_used = false;
 
-    // tool_use_result meta (kind + path) (bin/pager.c:3424).
+    // tool_use_result meta (kind + path).
     var tur_kind: []const u8 = "";
     var tur_path: []const u8 = "";
     if (tur) |t| {
@@ -252,7 +212,7 @@ fn handleUserArray(
         if (getString(t.get("filePath"))) |p| tur_path = p;
     }
 
-    // Relabel last tool_use when we have a structured patch (bin/pager.c:3425-3433).
+    // Relabel last tool_use when we have a structured patch.
     if (sp_payload != null) {
         if (asciiEqIgnoreCase(tur_kind, "create")) {
             try relabelLastToolUse(a, items, "Create", tur_path);
@@ -273,7 +233,7 @@ fn handleUserArray(
         var text: ?[]u8 = null;
         var handled_struct_patch = false;
 
-        // is_error flag (bin/pager.c:3444-3445).
+        // is_error flag.
         var ie = false;
         if (block.get("is_error")) |ev| {
             switch (ev) {
@@ -283,7 +243,7 @@ fn handleUserArray(
             }
         }
 
-        // Structured-patch payload emission (bin/pager.c:3446-3454).
+        // Structured-patch payload emission.
         if (!ie and sp_payload != null and !sp_used) {
             const sbuf = try std.fmt.allocPrint(a, "Added {d} lines, removed {d} lines", .{ sp_add, sp_del });
             try items.append(a, .{ .type = .tool_result, .text = sbuf, .label = null, .is_err = false });
@@ -296,11 +256,10 @@ fn handleUserArray(
         if (!handled_struct_patch) {
             if (rc) |rcv| {
                 if (rcv == .string) {
-                    // String content (bin/pager.c:3455-3456).
+                    // String content.
                     text = try extractText(a, rcv);
                 } else if (rcv == .array) {
-                    // Array of blocks: concatenate text blocks with '\n'
-                    // (bin/pager.c:3457-3477).
+                    // Array of blocks: concatenate text blocks with '\n'.
                     var buf: std.ArrayListUnmanaged(u8) = .empty;
                     for (rcv.array.items) |sub_val| {
                         if (sub_val != .object) continue;
@@ -312,10 +271,10 @@ fn handleUserArray(
                             try buf.appendSlice(a, sv);
                         }
                     }
-                    // Trim leading/trailing ' ' and '\n' (bin/pager.c:3474-3475).
+                    // Trim leading/trailing ' ' and '\n'.
                     const trimmed = std.mem.trim(u8, buf.items, " \n");
                     if (trimmed.len > 0) {
-                        // default mode: xstrdup (raw), not sanitize.
+                        // Keep raw text, not sanitized.
                         text = try a.dupe(u8, trimmed);
                     }
                 }
@@ -328,9 +287,9 @@ fn handleUserArray(
     }
 }
 
-/// Replicates bin/pager.c:3202-3287 — flatten `toolUseResult.structuredPatch`
-/// into the "CP_SP1\n..." line-prefixed payload, counting +/- lines.
-/// Returns null if there's no usable structured patch.
+/// Flatten `toolUseResult.structuredPatch` into the "CP_SP1\n..." line-prefixed
+/// payload, counting +/- lines. Returns null if there's no usable structured
+/// patch.
 fn buildStructuredPatchPayload(
     a: std.mem.Allocator,
     tur: ?std.json.ObjectMap,
@@ -370,7 +329,7 @@ fn buildStructuredPatchPayload(
             if (lv == .array) {
                 for (lv.array.items) |line_val| {
                     if (line_val != .string) continue;
-                    // Replace embedded CR/LF with spaces (bin/pager.c:3252-3254).
+                    // Replace embedded CR/LF with spaces.
                     const line_buf = try a.dupe(u8, line_val.string);
                     for (line_buf) |*c| {
                         if (c.* == '\n' or c.* == '\r') c.* = ' ';
@@ -394,8 +353,8 @@ fn buildStructuredPatchPayload(
     return try sb.toOwnedSlice(a);
 }
 
-/// Replicates bin/pager.c:3305-3327 — rewrite the most recent tool_use item
-/// whose text starts with a known file-op verb to "op_name(file_path)".
+/// Rewrite the most recent tool_use item whose text starts with a known
+/// file-op verb to "op_name(file_path)".
 fn relabelLastToolUse(
     a: std.mem.Allocator,
     items: *ItemList,
@@ -419,17 +378,16 @@ fn relabelLastToolUse(
             } else {
                 it.text = try a.dupe(u8, op_name);
             }
-            // C sets the label to an empty string ("") rather than NULL.
+            // Set the label to an empty string ("") rather than null.
             it.label = try a.dupe(u8, "");
         }
-        // C `break`s after the first tool_use regardless of whether it matched.
+        // Break after the first tool_use regardless of whether it matched.
         break;
     }
 }
 
-/// Equivalent of `extract_text(p, ..., sanitize_out=0)` (bin/pager.c:3094-3116):
-/// value must be a JSON string; trim leading/trailing ' ' and '\n'; return null
-/// when empty. No ANSI sanitization in default mode.
+/// Extract text from a JSON value: value must be a JSON string; trim
+/// leading/trailing ' ' and '\n'; return null when empty. No ANSI sanitization.
 fn extractText(a: std.mem.Allocator, value: ?std.json.Value) !?[]u8 {
     const v = value orelse return null;
     if (v != .string) return null;
@@ -438,7 +396,7 @@ fn extractText(a: std.mem.Allocator, value: ?std.json.Value) !?[]u8 {
     return try a.dupe(u8, trimmed);
 }
 
-/// Mirrors bin/pager.c:3084-3087.
+/// Returns true when text is a system tag that should be filtered out.
 fn isSystag(s: []const u8) bool {
     return std.mem.indexOf(u8, s, "<local-command-caveat") != null or
         std.mem.indexOf(u8, s, "<command-name") != null or
@@ -454,9 +412,8 @@ fn getString(value: ?std.json.Value) ?[]const u8 {
     };
 }
 
-/// Reads an integer from a JSON value. C uses jint -> atoi(jws(p)), which
-/// reads ints and truncates floats / parses leading-numeric strings; we mirror
-/// the common cases (integer, float-truncation, numeric string).
+/// Reads an integer from a JSON value, handling the common cases: integer,
+/// float-truncation, and leading-numeric strings.
 fn getInt(value: ?std.json.Value) ?i64 {
     const v = value orelse return null;
     return switch (v) {
@@ -479,13 +436,13 @@ const fixture0 = @embedFile("fixtures/sample0.jsonl");
 const fixture1 = @embedFile("fixtures/sample1.jsonl");
 
 test "parse extracts items from fixture" {
-    var tr = try parse(std.testing.allocator, fixture0, 200000);
+    var tr = try parse(std.testing.allocator, fixture0);
     defer tr.deinit();
     try std.testing.expect(tr.items.len > 0);
 }
 
 test "parse handles tool_use and tool_result fixture" {
-    var tr = try parse(std.testing.allocator, fixture1, 200000);
+    var tr = try parse(std.testing.allocator, fixture1);
     defer tr.deinit();
     var saw_tool_use = false;
     var saw_tool_result = false;
@@ -498,7 +455,7 @@ test "parse handles tool_use and tool_result fixture" {
 
 test "thinking blocks are dropped, not emitted" {
     // sample0 has 2 user, 2 assistant text, and 1 thinking block.
-    var tr = try parse(std.testing.allocator, fixture0, 200000);
+    var tr = try parse(std.testing.allocator, fixture0);
     defer tr.deinit();
     var users: usize = 0;
     var assistants: usize = 0;
@@ -513,7 +470,7 @@ test "thinking blocks are dropped, not emitted" {
 }
 
 test "tool_use label derived from input, tool_result text preserved" {
-    var tr = try parse(std.testing.allocator, fixture1, 200000);
+    var tr = try parse(std.testing.allocator, fixture1);
     defer tr.deinit();
     var found_bash = false;
     var found_result = false;
@@ -540,7 +497,7 @@ test "malformed and empty lines are skipped" {
         "{ broken json\n" ++
         "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"  hello  \"}}\n" ++
         "\n";
-    var tr = try parse(std.testing.allocator, input, 200000);
+    var tr = try parse(std.testing.allocator, input);
     defer tr.deinit();
     try std.testing.expectEqual(@as(usize, 1), tr.items.len);
     try std.testing.expectEqual(ItemType.user, tr.items[0].type);
@@ -552,25 +509,16 @@ test "systag user messages are filtered out" {
     const input =
         "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<system-reminder>ignore me</system-reminder>\"}}\n" ++
         "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"keep me\"}}\n";
-    var tr = try parse(std.testing.allocator, input, 200000);
+    var tr = try parse(std.testing.allocator, input);
     defer tr.deinit();
     try std.testing.expectEqual(@as(usize, 1), tr.items.len);
     try std.testing.expectEqualStrings("keep me", tr.items[0].text);
 }
 
-test "token count and pct from usage" {
-    const input =
-        "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"usage\":{\"input_tokens\":100,\"cache_creation_input_tokens\":20,\"cache_read_input_tokens\":80},\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n";
-    var tr = try parse(std.testing.allocator, input, 200000);
-    defer tr.deinit();
-    try std.testing.expectEqual(@as(usize, 200), tr.token_count);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.1), tr.pct, 1e-9);
-}
-
 test "Read tool_use with limit becomes 'Read N lines'" {
     const input =
         "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"/x\",\"limit\":42}}]}}\n";
-    var tr = try parse(std.testing.allocator, input, 200000);
+    var tr = try parse(std.testing.allocator, input);
     defer tr.deinit();
     try std.testing.expectEqual(@as(usize, 1), tr.items.len);
     try std.testing.expectEqualStrings("Read 42 lines", tr.items[0].text);
@@ -580,7 +528,7 @@ test "Read tool_use with limit becomes 'Read N lines'" {
 test "Edit tool_use becomes Update(file_path)" {
     const input =
         "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Edit\",\"input\":{\"file_path\":\"/path/foo.txt\"}}]}}\n";
-    var tr = try parse(std.testing.allocator, input, 200000);
+    var tr = try parse(std.testing.allocator, input);
     defer tr.deinit();
     try std.testing.expectEqual(@as(usize, 1), tr.items.len);
     try std.testing.expectEqualStrings("Update(/path/foo.txt)", tr.items[0].text);
@@ -591,7 +539,7 @@ test "structured patch relabels tool_use and emits payload" {
     const input =
         "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Edit\",\"input\":{\"file_path\":\"/f\"}}]}}\n" ++
         "{\"type\":\"user\",\"toolUseResult\":{\"type\":\"update\",\"filePath\":\"/f\",\"structuredPatch\":[{\"oldStart\":1,\"oldLines\":2,\"newStart\":1,\"newLines\":3,\"lines\":[\" ctx\",\"-gone\",\"+added\",\"+more\"]}]},\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"ok\"}]}}\n";
-    var tr = try parse(std.testing.allocator, input, 200000);
+    var tr = try parse(std.testing.allocator, input);
     defer tr.deinit();
     // items: tool_use (relabeled), tool_result summary, tool_result payload.
     try std.testing.expectEqual(@as(usize, 3), tr.items.len);

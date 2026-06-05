@@ -1,8 +1,6 @@
 // ansi.zig — SGR color/style constants and ANSI-aware visible-length.
-// Constants ported from bin/pager.c lines 28-90.
-// visibleLen ported from bin/pager.c:2243 (vlen). Byte-count semantics, matching
-// the C exactly (no Unicode/wide-char width): every non-escape byte counts as one
-// column. This is required for byte-identical render parity with the C goldens.
+// visibleLen uses byte-count semantics (no Unicode/wide-char width): every
+// non-escape byte counts as one column.
 
 const std = @import("std");
 
@@ -77,9 +75,7 @@ pub const br = "\xe2\x94\x98"; // ┘  bottom-right corner
 // ── ANSI-aware visible length ──────────────────────────────────────────────
 //
 // Walks the byte string s, skipping ANSI escape sequences and counting every
-// remaining byte as one column. This deliberately mirrors the C vlen
-// (bin/pager.c:2243-2259) byte-for-byte: the C has no Unicode/wide-char width
-// handling, so neither does this — required for byte-identical render parity.
+// remaining byte as one column. There is no Unicode/wide-char width handling.
 //
 // Escape sequences skipped (not counted):
 //   CSI  ESC '['  … up to and including a final byte (letter or '~')
@@ -95,7 +91,6 @@ pub fn visibleLen(s: []const u8) usize {
             if (i >= s.len) break;
             if (s[i] == '[') {
                 // CSI — skip until a final byte (letter or '~'), then consume it.
-                // Mirrors C vlen: while (!isalpha && *s!='~') s++; if (*s) s++;
                 i += 1;
                 while (i < s.len and !isCsiFinal(s[i])) i += 1;
                 if (i < s.len) i += 1;
@@ -118,7 +113,7 @@ pub fn visibleLen(s: []const u8) usize {
                 i += 1;
             }
         } else {
-            // Byte-count, exactly like C vlen (no Unicode width).
+            // Byte-count (no Unicode width).
             n += 1;
             i += 1;
         }
@@ -136,8 +131,8 @@ test "visibleLen ignores SGR sequences" {
     try std.testing.expectEqual(@as(usize, 3), visibleLen("\x1b[31mabc\x1b[0m"));
 }
 
-test "visibleLen counts CJK by UTF-8 bytes (matches C vlen)" {
-    // C vlen counts bytes, not display columns. "世" is 3 UTF-8 bytes → 3.
+test "visibleLen counts CJK by UTF-8 bytes" {
+    // visibleLen counts bytes, not display columns. "世" is 3 UTF-8 bytes → 3.
     try std.testing.expectEqual(@as(usize, 3), visibleLen("世"));
 }
 
@@ -151,7 +146,7 @@ test "visibleLen skips OSC sequence" {
 }
 
 test "visibleLen mixed SGR and CJK counts bytes" {
-    // bold + 世界 (6 UTF-8 bytes) + reset → 6 (byte-count, matches C vlen)
+    // bold + 世界 (6 UTF-8 bytes) + reset → 6 (byte-count)
     try std.testing.expectEqual(@as(usize, 6), visibleLen("\x1b[1m世界\x1b[0m"));
 }
 

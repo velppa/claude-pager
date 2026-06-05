@@ -1,6 +1,5 @@
-//! Plain-text render of a transcript, mirroring the C `pager_render_plain`
-//! (bin/pager.c:5990-6068). Reads a `.jsonl` transcript, renders it, strips
-//! ANSI/OSC escapes (keeping OSC-8 visible text), right-trims trailing
+//! Plain-text render of a transcript. Reads a `.jsonl` transcript, renders it,
+//! strips ANSI/OSC escapes (keeping OSC-8 visible text), right-trims trailing
 //! whitespace per line, skips wrap-placeholder rows, and writes plain text.
 
 const std = @import("std");
@@ -11,8 +10,8 @@ const render = @import("render.zig");
 /// Strip ANSI CSI and OSC escape sequences from `line`, keeping the visible
 /// text of OSC-8 hyperlinks (the URI carried in the OSC payload is dropped).
 /// The result is freshly allocated; the CALLER is responsible for right-trimming
-/// (via `rtrim`) and freeing. Mirrors C `strip_ansi_to` (bin/pager.c:5995-6019)
-/// and render.zig's `plainLine` strip loop (minus the trim).
+/// (via `rtrim`) and freeing. See render.zig's `plainLine` strip loop (minus
+/// the trim).
 pub fn stripAnsi(alloc: std.mem.Allocator, line: []const u8) ![]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(alloc);
@@ -45,8 +44,7 @@ pub fn stripAnsi(alloc: std.mem.Allocator, line: []const u8) ![]u8 {
     return out.toOwnedSlice(alloc);
 }
 
-/// Drop trailing ' ', '\t', '\r' from `s`. Mirrors the trailing-whitespace
-/// trim in C `pager_render_plain` (bin/pager.c:6054-6056).
+/// Drop trailing ' ', '\t', '\r' from `s`.
 pub fn rtrim(s: []const u8) []const u8 {
     var end = s.len;
     while (end > 0 and (s[end - 1] == ' ' or s[end - 1] == '\t' or s[end - 1] == '\r')) end -= 1;
@@ -57,24 +55,13 @@ fn isWrapPlaceholder(ln: []const u8) bool {
     return std.mem.eql(u8, ln, ansi.wrap_placeholder);
 }
 
-/// Format the context-usage status line, e.g. "ctx 6%  12k/200k". Plain text,
-/// safe for both the terminal summary and the inline-editor render file.
-/// Mirrors the old pager footer status (draw.zig `drawStatus`).
-pub fn ctxLine(alloc: std.mem.Allocator, token_count: usize, pct: f64, ctx_limit: usize) ![]u8 {
-    const tok_k = @as(f64, @floatFromInt(token_count)) / 1000.0;
-    const lim_k = ctx_limit / 1000;
-    return std.fmt.allocPrint(alloc, "ctx {d:.0}%  {d:.0}k/{d}k", .{ pct, tok_k, lim_k });
-}
-
-/// Read the transcript at `transcript_path`, render it at `cols`/`ctx_limit`,
-/// strip + rtrim each non-wrap-placeholder line, and write line+'\n' to
-/// `out_path`. Parity with C `pager_render_plain` (bin/pager.c:6021-6068).
+/// Read the transcript at `transcript_path`, render it at `cols`, strip + rtrim
+/// each non-wrap-placeholder line, and write line+'\n' to `out_path`.
 pub fn renderPlain(
     alloc: std.mem.Allocator,
     transcript_path: []const u8,
     out_path: []const u8,
     cols: usize,
-    ctx_limit: usize,
 ) !void {
     var threaded = std.Io.Threaded.init(alloc, .{});
     defer threaded.deinit();
@@ -86,7 +73,7 @@ pub fn renderPlain(
 
     // `parse` owns an arena (built from `alloc`); reuse it for rendering and the
     // output buffer so a single `tr.deinit()` reclaims everything.
-    var tr = try transcript.parse(alloc, jsonl, ctx_limit);
+    var tr = try transcript.parse(alloc, jsonl);
     defer tr.deinit();
     const a = tr.arena.allocator();
     const lines = try render.renderItems(a, tr.items, cols);
@@ -101,26 +88,18 @@ pub fn renderPlain(
         try out.append(a, '\n');
     }
 
-    // Plain context-usage line at the bottom, after a blank separator, so it
-    // stays visible near the prompt instead of scrolling off the top.
-    const cline = try ctxLine(a, tr.token_count, tr.pct, ctx_limit);
-    try out.append(a, '\n');
-    try out.appendSlice(a, cline);
-    try out.append(a, '\n');
-
     try cwd.writeFile(io, .{ .sub_path = out_path, .data = out.items });
 }
 
 /// Render the transcript at `transcript_path` to a freshly-allocated buffer of
 /// COLORED text — ANSI CSI color is kept (URLs/OSC-8 are already absent from the
-/// render output), prefixed with a colored context-usage line. Caller owns and
-/// frees the result. Used for the static terminal summary; the inline-editor
-/// file uses `renderPlain` (color-stripped) instead.
+/// render output). Caller owns and frees the result. Used for the static
+/// terminal summary; the inline-editor file uses `renderPlain`
+/// (color-stripped) instead.
 pub fn renderColored(
     alloc: std.mem.Allocator,
     transcript_path: []const u8,
     cols: usize,
-    ctx_limit: usize,
 ) ![]u8 {
     var threaded = std.Io.Threaded.init(alloc, .{});
     defer threaded.deinit();
@@ -130,7 +109,7 @@ pub fn renderColored(
     const jsonl = try cwd.readFileAlloc(io, transcript_path, alloc, .unlimited);
     defer alloc.free(jsonl);
 
-    var tr = try transcript.parse(alloc, jsonl, ctx_limit);
+    var tr = try transcript.parse(alloc, jsonl);
     defer tr.deinit();
     const a = tr.arena.allocator();
     const lines = try render.renderItems(a, tr.items, cols);
@@ -145,22 +124,13 @@ pub fn renderColored(
         try out.append(alloc, '\n');
     }
 
-    // Colored context-usage line at the bottom, after a blank separator, so it
-    // stays visible near the prompt instead of scrolling off the top.
-    const cline = try ctxLine(a, tr.token_count, tr.pct, ctx_limit);
-    try out.append(alloc, '\n');
-    try out.appendSlice(alloc, ansi.c_hdm);
-    try out.appendSlice(alloc, cline);
-    try out.appendSlice(alloc, ansi.reset);
-    try out.append(alloc, '\n');
-
     return out.toOwnedSlice(alloc);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 fn buildPlain(a: std.mem.Allocator, jsonl: []const u8, cols: usize) ![]u8 {
-    const tr = try transcript.parse(a, jsonl, 200000);
+    const tr = try transcript.parse(a, jsonl);
     const lines = try render.renderItems(a, tr.items, cols);
     var out: std.ArrayListUnmanaged(u8) = .empty;
     for (lines) |ln| {
@@ -213,21 +183,7 @@ test "stripAnsi removes CSI and keeps OSC-8 visible text" {
     try std.testing.expectEqualStrings("green click!", got);
 }
 
-test "ctxLine formats percent and k tokens" {
-    const a = std.testing.allocator;
-    const s = try ctxLine(a, 12345, 6.17, 200000);
-    defer a.free(s);
-    try std.testing.expectEqualStrings("ctx 6%  12k/200k", s);
-}
-
-test "ctxLine zero usage" {
-    const a = std.testing.allocator;
-    const s = try ctxLine(a, 0, 0, 200000);
-    defer a.free(s);
-    try std.testing.expectEqualStrings("ctx 0%  0k/200k", s);
-}
-
-test "renderColored prefixes colored context line and keeps color" {
+test "renderColored keeps color" {
     const a = std.testing.allocator;
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
@@ -238,17 +194,14 @@ test "renderColored prefixes colored context line and keeps color" {
 
     const jsonl =
         \\{"type":"user","message":{"role":"user","content":"hello"}}
-        \\{"type":"assistant","message":{"role":"assistant","usage":{"input_tokens":100,"cache_read_input_tokens":80},"content":[{"type":"text","text":"hi there"}]}}
+        \\{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi there"}]}}
         \\
     ;
     try tmp.dir.writeFile(io, .{ .sub_path = "in.jsonl", .data = jsonl });
 
-    const out = try renderColored(a, in_path, 80, 200000);
+    const out = try renderColored(a, in_path, 80);
     defer a.free(out);
-    // Ends with the colored "ctx ..." status line (bottom of the dump).
-    try std.testing.expect(std.mem.endsWith(u8, out, ansi.reset ++ "\n"));
-    try std.testing.expect(std.mem.indexOf(u8, out, ansi.c_hdm ++ "ctx ") != null);
-    // Color is preserved in the body too (an ESC before the status line).
+    // Color is preserved in the body (an ESC sequence is present).
     try std.testing.expect(std.mem.indexOfScalar(u8, out, 0x1b) != null);
 }
 
@@ -272,7 +225,7 @@ test "renderPlain file round-trip produces non-empty, no trailing whitespace" {
     ;
     try tmp.dir.writeFile(io, .{ .sub_path = "in.jsonl", .data = jsonl });
 
-    try renderPlain(a, in_path, out_path, 80, 200000);
+    try renderPlain(a, in_path, out_path, 80);
 
     const got = try tmp.dir.readFileAlloc(io, "out.txt", a, .unlimited);
     defer a.free(got);

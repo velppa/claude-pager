@@ -16,8 +16,6 @@ const render_plain = @import("render_plain.zig");
 const term = @import("term.zig");
 const log = @import("log.zig");
 
-const CTX_LIMIT: usize = 200000;
-
 // libc functions not surfaced by std in Zig 0.16.
 extern "c" fn ttyname(fd: c_int) ?[*:0]const u8;
 extern "c" fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) c_int;
@@ -28,7 +26,7 @@ extern "c" fn fork() std.c.pid_t;
 
 /// Return the path of the most-recently-modified `*.jsonl` file directly in
 /// `dir`, or null if there is none / the dir can't be opened.
-/// Caller owns the returned slice. Mirrors newest_jsonl (C line 237).
+/// Caller owns the returned slice.
 pub fn newestJsonl(alloc: std.mem.Allocator, dir: []const u8) !?[]u8 {
     var threaded = std.Io.Threaded.init(alloc, .{});
     defer threaded.deinit();
@@ -58,7 +56,6 @@ pub fn newestJsonl(alloc: std.mem.Allocator, dir: []const u8) !?[]u8 {
 
 /// Locate the newest `.jsonl` transcript for the current session/cwd under
 /// `<home>/.claude/projects/...`. Caller owns the returned slice (or null).
-/// Mirrors find_transcript (C line 260).
 pub fn findTranscript(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
     // Strategy 1: tty-keyed file written by the SessionStart hook.
     if (ttyKeyedTranscript(alloc)) |t| {
@@ -175,7 +172,7 @@ pub fn maybeRenderTranscript(alloc: std.mem.Allocator, home: []const u8, tty_fd:
     ) catch return null;
     errdefer alloc.free(render_path);
 
-    render_plain.renderPlain(alloc, transcript, render_path, cols, CTX_LIMIT) catch {
+    render_plain.renderPlain(alloc, transcript, render_path, cols) catch {
         log.dbg("plain render failed for {s}", .{transcript});
         alloc.free(render_path);
         return null;
@@ -215,7 +212,7 @@ fn printSummary(alloc: std.mem.Allocator, home: []const u8) void {
     const ws = term.getWinsize(tty_fd);
     if (ws.cols > 0) cols = if (ws.cols < 120) ws.cols else 120;
 
-    const text = render_plain.renderColored(alloc, transcript, cols, CTX_LIMIT) catch return;
+    const text = render_plain.renderColored(alloc, transcript, cols) catch return;
     defer alloc.free(text);
     if (text.len == 0) return;
 
@@ -227,7 +224,7 @@ fn printSummary(alloc: std.mem.Allocator, home: []const u8) void {
 
 /// Fork+exec the editor command (via `/bin/sh -c "exec <editor> \"$1\""`) on
 /// `file`. When `detach_stdin` is set, the child's stdin is redirected from
-/// /dev/null. Returns the child pid. Mirrors spawn_editor (C line 741).
+/// /dev/null. Returns the child pid.
 pub fn spawnEditor(
     alloc: std.mem.Allocator,
     editor: []const u8,
@@ -261,7 +258,6 @@ pub fn spawnEditor(
 /// Terminal (TUI) editors can't share the terminal with the pager, so render
 /// the transcript to plain text (for inline-context editors) then exec the
 /// editor directly, replacing this process. On exec failure returns 127.
-/// Mirrors terminal_editor_path (C line 726).
 pub fn terminalEditorPath(
     alloc: std.mem.Allocator,
     home: []const u8,

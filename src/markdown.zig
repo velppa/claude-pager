@@ -1,35 +1,33 @@
 //! markdown.zig — inline markdown spans and block (table) rendering.
 //!
-//! Ported from bin/pager.c:
-//!  - renderInline  ← fmt_inline (bin/pager.c:3497-3516)
-//!  - tableBorderLine ← md_table_border_line (bin/pager.c:3679-3691)
-//!  - renderBlock   ← render_md (bin/pager.c:3783-3913), the inline-block path
+//! Components:
+//!  - renderInline  ← fmt_inline
+//!  - tableBorderLine ← md_table_border_line
+//!  - renderBlock   ← render_md, the inline-block path
 //!    (headers, bullets, numbered lists, default text) plus the table assembly
-//!    (md_render_table_block, bin/pager.c:3693-3781).
+//!    (md_render_table_block).
 //!
-//! Fidelity target: output is byte-compared to the C goldens. All escape
-//! sequences and box glyphs are taken from `ansi.zig` (which mirrors the same C
-//! #defines), so the bytes match the C exactly. Visible-length / column math
-//! matches the C byte-count semantics (no Unicode width), as documented in
+//! All escape sequences and box glyphs are taken from `ansi.zig`. Visible-length
+//! / column math uses byte-count semantics (no Unicode width), as documented in
 //! ansi.zig.
 //!
-//! Scope notes / deviations from the full C render_md:
+//! Scope notes:
 //!  - Code fences, the `md_tail_start` "earlier lines omitted" prefix, URL/path
 //!    shortening and OSC-8 file-link targets (md_cell_target/md_cell_label
 //!    shorten_url/shorten_path/build_file_uri_target) live in other modules and
 //!    are out of scope for Task 7. renderBlock renders table cell labels via the
-//!    same fit/truncate logic (md_fit_cell) the C uses, but without the URL/path
-//!    shortening pre-pass and without emitting OSC-8 link wrappers. This is the
-//!    plain-text cell path; link wrapping is layered later.
+//!    fit/truncate logic (md_fit_cell), but without the URL/path shortening
+//!    pre-pass and without emitting OSC-8 link wrappers. This is the plain-text
+//!    cell path; link wrapping is layered later.
 //!  - `g_cols` (terminal width) is passed in as `cols`.
 
 const std = @import("std");
 const ansi = @import("ansi.zig");
 
-// ── Inline markdown: **bold** and `code` (fmt_inline, bin/pager.c:3497) ──────
+// ── Inline markdown: **bold** and `code` (fmt_inline) ───────────────────────
 
 /// Render inline markdown (`**bold**` and `` `code` ``) in `s` into a new
-/// ANSI-styled string owned by `alloc`. Mirrors fmt_inline exactly:
+/// ANSI-styled string owned by `alloc`. fmt_inline behavior:
 ///  - The whole run is wrapped in C_AST … RS.
 ///  - `**bold**`  → BO text RS C_AST  (closing `**` consumed if present).
 ///  - `` `code` `` (single backtick, not a double) → C_CIN text RS C_AST
@@ -70,11 +68,11 @@ pub fn renderInline(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
     return out.toOwnedSlice(alloc);
 }
 
-// ── Table border line (md_table_border_line, bin/pager.c:3679) ───────────────
+// ── Table border line (md_table_border_line) ────────────────────────────────
 
 /// Build one table border/rule line into `buf`, returning the slice written.
 ///
-/// Mirrors md_table_border_line: a "  " indent prefixed with C_HDM, then for
+/// md_table_border_line: a "  " indent prefixed with C_HDM, then for
 /// each column `widths[c] + 2` horizontal-line glyphs followed by `mid` (between
 /// columns) or `right` (last column); `left` opens the run. Closed with RS.
 ///
@@ -115,7 +113,7 @@ pub fn tableBorderLine(
 
 // ── Block rendering helpers ──────────────────────────────────────────────────
 
-/// md_trim_span (bin/pager.c:3555): trim leading/trailing spaces & tabs,
+/// md_trim_span: trim leading/trailing spaces & tabs,
 /// returning the trimmed subslice.
 fn trimSpan(s: []const u8) []const u8 {
     var start: usize = 0;
@@ -125,7 +123,7 @@ fn trimSpan(s: []const u8) []const u8 {
     return s[start..end];
 }
 
-/// looks_like_table_row (bin/pager.c:2421).
+/// looks_like_table_row.
 fn looksLikeTableRow(s: []const u8) bool {
     if (s.len == 0) return false;
     if (std.mem.indexOf(u8, s, ansi.vl) != null or
@@ -143,7 +141,7 @@ fn looksLikeTableRow(s: []const u8) bool {
     return std.mem.indexOf(u8, s, " | ") != null;
 }
 
-/// md_is_table_sep_line (bin/pager.c:3560): the `---|:--:|---` separator row.
+/// md_is_table_sep_line: the `---|:--:|---` separator row.
 fn isTableSepLine(line: []const u8) bool {
     if (line.len == 0) return false;
     var p: usize = 0;
@@ -173,7 +171,7 @@ fn isTableSepLine(line: []const u8) bool {
 const md_tbl_max_cols = 8;
 const md_tbl_cell_max = 192;
 
-/// md_split_table_cells (bin/pager.c:3592). Splits a row into trimmed cells
+/// md_split_table_cells. Splits a row into trimmed cells
 /// (each capped to md_tbl_cell_max-1 bytes). Returns the cell slices written
 /// into `cells` and the count. Trailing empty cells are dropped.
 fn splitTableCells(line: []const u8, cells: [][]const u8, max_cols: usize) usize {
@@ -198,7 +196,7 @@ fn splitTableCells(line: []const u8, cells: [][]const u8, max_cols: usize) usize
     return n;
 }
 
-/// md_fit_cell (bin/pager.c:3619): fit `src` into a cell of visible width
+/// md_fit_cell: fit `src` into a cell of visible width
 /// `width`. If it fits, copied verbatim; otherwise truncated to width-1 bytes
 /// plus a literal '.' (or just "." when width<=1). Returns slice in `dst`.
 fn fitCell(dst: []u8, src: []const u8, width: usize) []u8 {
@@ -218,10 +216,10 @@ fn fitCell(dst: []u8, src: []const u8, width: usize) []u8 {
     return dst[0 .. n + 1];
 }
 
-/// md_render_table_block (bin/pager.c:3693): compute column widths and emit the
+/// md_render_table_block: compute column widths and emit the
 /// box-ruled table into `out` (one slice per rendered line, allocated in
 /// `alloc`). `header`/`rows` hold trimmed cell slices; `ncol` is the column
-/// count; `cols` is the terminal width (C g_cols).
+/// count; `cols` is the terminal width.
 fn renderTableBlock(
     alloc: std.mem.Allocator,
     out: *std.ArrayListUnmanaged([]u8),
@@ -238,7 +236,7 @@ fn renderTableBlock(
     var widths: [md_tbl_max_cols]usize = undefined;
     for (0..ncol) |c| widths[c] = 3;
 
-    // Header widths (bin/pager.c:3703).
+    // Header widths.
     {
         var c: usize = 0;
         while (c < hcols and c < ncol) : (c += 1) {
@@ -246,7 +244,7 @@ fn renderTableBlock(
             if (wl > widths[c]) widths[c] = wl;
         }
     }
-    // Row widths (bin/pager.c:3707).
+    // Row widths.
     for (rows) |row| {
         for (0..ncol) |c| {
             const wl = row[c].len;
@@ -254,7 +252,7 @@ fn renderTableBlock(
         }
     }
 
-    // Clamp 3..32, then shrink to fit terminal (bin/pager.c:3714-3733).
+    // Clamp 3..32, then shrink to fit terminal.
     var sum: usize = 0;
     for (0..ncol) |c| {
         if (widths[c] > 32) widths[c] = 32;
@@ -286,7 +284,7 @@ fn renderTableBlock(
     // Top rule ┌┬┐
     try pushDup(alloc, out, tableBorderLine(&buf, wslice, ansi.tl, "\xe2\x94\xac", ansi.tr));
 
-    // Header row (bin/pager.c:3739-3747).
+    // Header row.
     {
         var ln = @as(std.ArrayListUnmanaged(u8), .empty);
         defer ln.deinit(alloc);
@@ -316,7 +314,7 @@ fn renderTableBlock(
     // Header separator ├┼┤
     try pushDup(alloc, out, tableBorderLine(&buf, wslice, "\xe2\x94\x9c", "\xe2\x94\xbc", "\xe2\x94\xa4"));
 
-    // Body rows (bin/pager.c:3752-3777).
+    // Body rows.
     for (rows, 0..) |row, r| {
         var ln = @as(std.ArrayListUnmanaged(u8), .empty);
         defer ln.deinit(alloc);
@@ -354,15 +352,15 @@ fn pushDup(alloc: std.mem.Allocator, out: *std.ArrayListUnmanaged([]u8), s: []co
     try out.append(alloc, try alloc.dupe(u8, s));
 }
 
-// ── renderBlock (render_md, bin/pager.c:3783) ────────────────────────────────
+// ── renderBlock (render_md) ──────────────────────────────────────────────────
 
 /// Render a markdown block `md` into a list of ANSI-styled lines for a terminal
 /// `cols` wide. Each returned slice is one output line, allocated in `alloc`.
 ///
-/// Ports the per-line dispatch of render_md (excluding code fences and the
+/// Implements the per-line dispatch of render_md (excluding code fences and the
 /// tail-omission prefix; see module header): GitHub-style tables, ATX headers,
 /// bullet lists, numbered lists, and default inline text. Table detection
-/// requires `cols >= 72`, matching the C gate.
+/// requires `cols >= 72`.
 pub fn renderBlock(alloc: std.mem.Allocator, md: []const u8, cols: usize) ![][]u8 {
     var out = @as(std.ArrayListUnmanaged([]u8), .empty);
     errdefer {
@@ -372,7 +370,7 @@ pub fn renderBlock(alloc: std.mem.Allocator, md: []const u8, cols: usize) ![][]u
 
     var it = LineIter{ .s = md };
     while (it.next()) |line| {
-        // Tables (bin/pager.c:3821).
+        // Tables.
         if (cols >= 72 and looksLikeTableRow(line)) {
             // Peek the separator line.
             if (it.peek()) |sep_line| {
@@ -404,7 +402,7 @@ pub fn renderBlock(alloc: std.mem.Allocator, md: []const u8, cols: usize) ![][]u
             }
         }
 
-        // Headers (bin/pager.c:3863).
+        // Headers.
         if (line.len > 0 and line[0] == '#') {
             var lv: usize = 0;
             while (lv < line.len and line[lv] == '#') lv += 1;
@@ -432,7 +430,7 @@ pub fn renderBlock(alloc: std.mem.Allocator, md: []const u8, cols: usize) ![][]u
             }
         }
 
-        // Bullets (bin/pager.c:3888).
+        // Bullets.
         var ind: usize = 0;
         while (ind < line.len and line[ind] == ' ') ind += 1;
         if (ind < line.len and (line[ind] == '-' or line[ind] == '*') and
@@ -453,7 +451,7 @@ pub fn renderBlock(alloc: std.mem.Allocator, md: []const u8, cols: usize) ![][]u
             continue;
         }
 
-        // Numbered lists (bin/pager.c:3897).
+        // Numbered lists.
         if (line.len > 0 and std.ascii.isDigit(line[0])) {
             var d: usize = 0;
             while (d < line.len and std.ascii.isDigit(line[d])) d += 1;
@@ -474,7 +472,7 @@ pub fn renderBlock(alloc: std.mem.Allocator, md: []const u8, cols: usize) ![][]u
             }
         }
 
-        // Default text (bin/pager.c:3909).
+        // Default text.
         if (line.len > 0) {
             const inner = try renderInline(alloc, line);
             try out.append(alloc, inner);
@@ -494,8 +492,8 @@ fn pushFmt(alloc: std.mem.Allocator, out: *std.ArrayListUnmanaged([]u8), parts: 
     try out.append(alloc, try alloc.dupe(u8, ln.items));
 }
 
-/// Iterates `s` by '\n'-delimited lines (the newline is not included). Mirrors
-/// render_md's loop: a trailing segment without '\n' is still yielded.
+/// Iterates `s` by '\n'-delimited lines (the newline is not included). As in
+/// render_md's loop, a trailing segment without '\n' is still yielded.
 const LineIter = struct {
     s: []const u8,
     pos: usize = 0,
@@ -551,7 +549,7 @@ test "inline run is wrapped in C_AST and trailing RS" {
     try std.testing.expectEqualStrings(want, out);
 }
 
-test "inline bold exact byte sequence matches C fmt_inline" {
+test "inline bold exact byte sequence (fmt_inline)" {
     const a = std.testing.allocator;
     const out = try renderInline(a, "**hi**");
     defer a.free(out);

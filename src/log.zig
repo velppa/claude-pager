@@ -1,8 +1,7 @@
 // log.zig — debug logging for claude-pager.
-// Mirrors the PDBG / dbg_open pattern in bin/pager.c:101-230 and the
-// dbg_open / DBG pattern in bin/claude-pager-open.c:33-52.
+// Debug-logging helper (PDBG / dbg_open pattern).
 //
-// Gate: the C open binary sets _CLAUDE_PAGER_T0_US before the pager runs,
+// Gate: the open binary sets _CLAUDE_PAGER_T0_US before the pager runs,
 // so that env var being present signals that the debug session is active.
 // Log file: /tmp/claude-pager-open.log  (same path as C).
 
@@ -23,7 +22,7 @@ pub fn open() void {
     const t0_str = getenv("_CLAUDE_PAGER_T0_US") orelse return;
 
     // Parse the stored start-time so our timestamps are relative to the
-    // same epoch the C code uses.
+    // same epoch the launcher records.
     g_t0_us = std.fmt.parseInt(i64, t0_str, 10) catch nowUs();
 
     g_file = std.c.fopen("/tmp/claude-pager-open.log", "a");

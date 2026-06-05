@@ -32,7 +32,6 @@ pub const RawMode = struct {
     pub fn enable(fd: std.posix.fd_t) !RawMode {
         const orig = try std.posix.tcgetattr(fd);
         var t = orig;
-        // Mirrors bin/pager.c:5259-5263.
         // c_iflag &= ~(IGNBRK|BRKINT|PARMRK|ISTRIP|INLCR|IGNCR|ICRNL|IXON|IXOFF)
         t.iflag.IGNBRK = false;
         t.iflag.BRKINT = false;

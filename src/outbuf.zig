@@ -1,6 +1,6 @@
 // outbuf.zig — growable output byte buffer for the drawing code.
-// Mirrors the C ob/obf pattern in bin/pager.c:560-617 but backed by a
-// heap-allocated ArrayList so callers never have to worry about overflow.
+// Backed by a heap-allocated ArrayList so callers never have to worry about
+// overflow.
 
 const std = @import("std");
 

@@ -1,10 +1,9 @@
 //! settings.zig — Read editor configuration from ~/.claude/settings.json.
 //!
-//! Replaces the hand-rolled brace scanner in bin/claude-pager-open.c:130-221
-//! with std.json. Key names from the C reference:
-//!   CLAUDE_PAGER_EDITOR      (read_settings_editor,      line 211)
-//!   CLAUDE_PAGER_EDITOR_TYPE (read_settings_editor_type, line 215)
-//!   CLAUDE_PAGER_BENCH       (read_settings_bench_mode,  line 219)
+//! Keys read from the `env` block:
+//!   CLAUDE_PAGER_EDITOR
+//!   CLAUDE_PAGER_EDITOR_TYPE
+//!   CLAUDE_PAGER_BENCH
 //!
 //! The settings file structure: { "env": { "CLAUDE_PAGER_EDITOR": "...", ... } }
 
