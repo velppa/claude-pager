@@ -6,7 +6,7 @@ set -euo pipefail
 REPO="https://github.com/velppa/claude-pager.git"
 REPO_BRANCH="zig-rewrite"
 INSTALL_DIR="${HOME}/.claude-pager"
-BINARY="${INSTALL_DIR}/bin/claude-pager-open"
+BINARY="${INSTALL_DIR}/bin/claude-pager"
 SETTINGS="${HOME}/.claude/settings.json"
 HOOK_SESSION="${INSTALL_DIR}/shim/save-session-transcript.sh"
 
@@ -83,7 +83,7 @@ fi
 echo "Building..."
 ( cd "$INSTALL_DIR" && zig build -Doptimize=ReleaseSmall )
 
-BUILD_OPEN="${INSTALL_DIR}/zig-out/bin/claude-pager-open"
+BUILD_OPEN="${INSTALL_DIR}/zig-out/bin/claude-pager"
 
 if [[ ! -x "$BUILD_OPEN" ]]; then
     echo "ERROR: build failed — expected binary not found in ${INSTALL_DIR}/zig-out/bin" >&2
@@ -196,7 +196,7 @@ else
     fi
 fi
 
-# Set editor to claude-pager-open binary
+# Set editor to claude-pager binary
 SETTINGS_TMP=$(mktemp)
 jq --arg bin "$BINARY" '.editor = $bin' "$SETTINGS" > "$SETTINGS_TMP"
 mv "$SETTINGS_TMP" "$SETTINGS"

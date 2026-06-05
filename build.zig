@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
     const strip = optimize != .Debug;
 
     const exe_open = b.addExecutable(.{
-        .name = "claude-pager-open",
+        .name = "claude-pager",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main_open.zig"),
             .target = target,

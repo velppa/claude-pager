@@ -22,7 +22,7 @@ if [[ -z "$transcript" || ! -r "$transcript" ]]; then
 fi
 
 # --- load lib + arm the pending transcript (non-blocking) ---
-# If claude-pager-open pre-rendered the transcript to plain text, prefer that
+# If claude-pager pre-rendered the transcript to plain text, prefer that
 # (single source of truth with the pager); else fall back to the .jsonl which
 # Emacs renders itself.
 tx_el="nil"

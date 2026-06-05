@@ -10,7 +10,7 @@ The runtime is a single compiled Zig binary — no Python, no Node, no runtime d
 
 When you press **Ctrl-G** in Claude Code:
 
-1. `claude-pager-open` (configured as Claude's `editor`) finds your session transcript.
+1. `claude-pager` (configured as Claude's `editor`) finds your session transcript.
 2. It renders the transcript to plain text and exports the path as `CLAUDE_PAGER_RENDER_FILE` so the editor can show it as context.
 3. It launches your configured editor.
 4. For GUI editors it prints the rendered transcript **once, statically** to the terminal as a read-only summary, then waits for the editor to close.
@@ -54,7 +54,7 @@ zig build -Doptimize=ReleaseSmall  # optimized release build (installer default)
 zig build test                     # run the test suite
 ```
 
-This produces `zig-out/bin/claude-pager-open` (zero runtime dependencies).
+This produces `zig-out/bin/claude-pager` (zero runtime dependencies).
 
 ## Setup
 
@@ -66,7 +66,7 @@ Add to `~/.claude/settings.json`:
 
 ```json
 {
-  "editor": "/path/to/claude-pager-open",
+  "editor": "/path/to/claude-pager",
   "env": {
     "CLAUDE_PAGER_EDITOR": "code --wait",
     "CLAUDE_PAGER_EDITOR_TYPE": "gui"
@@ -163,7 +163,7 @@ The integration is two files under `emacs/`:
 
    ```json
    {
-     "editor": "/path/to/claude-pager-open",
+     "editor": "/path/to/claude-pager",
      "env": {
        "CLAUDE_PAGER_EDITOR": "/Users/you/.claude-pager/emacs/claude-emacs-prompt",
        "CLAUDE_PAGER_EDITOR_TYPE": "tui"
@@ -195,12 +195,12 @@ Type below the separator and finish with **`C-c C-c`** (saves the body and retur
 
 ### Transcript source
 
-The shim prefers the plain-text render produced by `claude-pager-open` (via `CLAUDE_PAGER_RENDER_FILE`), keeping a single source of truth. If that is absent, it falls back to the tty-keyed transcript pointer (`/tmp/claude-transcript-<tty>`) written by the SessionStart hook, and finally to the most recent `.jsonl` in the project directory — which `claude-prompt.el` then renders itself.
+The shim prefers the plain-text render produced by `claude-pager` (via `CLAUDE_PAGER_RENDER_FILE`), keeping a single source of truth. If that is absent, it falls back to the tty-keyed transcript pointer (`/tmp/claude-transcript-<tty>`) written by the SessionStart hook, and finally to the most recent `.jsonl` in the project directory — which `claude-prompt.el` then renders itself.
 
 ## Architecture
 
 ```
-claude-pager-open (Zig binary)
+claude-pager (Zig binary)
 ├── Editor resolution (CLAUDE_PAGER_EDITOR from env/settings.json → VISUAL → EDITOR → system default)
 ├── TUI detection (known TUI list + optional CLAUDE_PAGER_EDITOR_TYPE override + optimistic unknown-editor probe)
 ├── Transcript lookup (tty-keyed temp file → PWD-derived project dir → newest jsonl)
@@ -236,7 +236,7 @@ command -v jq >/dev/null 2>&1 || brew install jq
 ```sh
 git clone https://github.com/velppa/claude-pager.git ~/.claude-pager
 ( cd ~/.claude-pager && zig build -Doptimize=ReleaseSmall )
-test -x ~/.claude-pager/zig-out/bin/claude-pager-open
+test -x ~/.claude-pager/zig-out/bin/claude-pager
 ```
 
 ### 3. Configure settings.json
@@ -251,7 +251,7 @@ Read `~/.claude/settings.json` (create with `{}` if missing). Use `jq` to:
 Important: Claude hooks must use wrapped hook-group objects with nested `hooks` arrays. Do not write legacy flat command objects directly under `hooks.SessionStart`.
 
 ```sh
-BINARY="$HOME/.claude-pager/bin/claude-pager-open"
+BINARY="$HOME/.claude-pager/bin/claude-pager"
 HOOK_SESSION="$HOME/.claude-pager/shim/save-session-transcript.sh"
 SETTINGS="$HOME/.claude/settings.json"
 
@@ -274,7 +274,7 @@ if [[ -z "$(jq -r '.env.CLAUDE_PAGER_EDITOR // empty' "$SETTINGS")" ]]; then
     done
 fi
 
-# Set editor to claude-pager-open
+# Set editor to claude-pager
 jq --arg bin "$BINARY" '.editor = $bin' "$SETTINGS" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
 
 # Infer editor type

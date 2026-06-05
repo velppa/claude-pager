@@ -15,7 +15,7 @@
   "Path to transcript .jsonl set by the editor wrapper just before opening.")
 
 (defvar claude-prompt--pending-render nil
-  "Path to a plain-text transcript pre-rendered by claude-pager-open.
+  "Path to a plain-text transcript pre-rendered by claude-pager.
 When set, its contents are used as the read-only context verbatim instead
 of rendering the .jsonl ourselves, keeping a single source of truth with the
 pager.")
@@ -87,7 +87,7 @@ pager.")
           (string-join (nreverse out) "\n\n"))))))
 
 (defun claude-prompt--read-render (render-path)
-  "Return contents of RENDER-PATH (pre-rendered by claude-pager-open), or nil."
+  "Return contents of RENDER-PATH (pre-rendered by claude-pager), or nil."
   (when (and render-path (file-readable-p render-path))
     (with-temp-buffer
       (insert-file-contents render-path)
@@ -96,7 +96,7 @@ pager.")
 
 (defun claude-prompt--install (buffer transcript-path &optional render-path)
   "Insert read-only context above existing text in BUFFER.
-If RENDER-PATH points to a plain-text render from claude-pager-open, use it
+If RENDER-PATH points to a plain-text render from claude-pager, use it
 verbatim; otherwise render TRANSCRIPT-PATH (.jsonl) ourselves."
   (with-current-buffer buffer
     ;; Plain text, no markdown fontification — Claude's prompt file extension
