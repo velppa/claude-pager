@@ -399,6 +399,7 @@ fn extractText(a: std.mem.Allocator, value: ?std.json.Value) !?[]u8 {
 /// Returns true when text is a system tag that should be filtered out.
 fn isSystag(s: []const u8) bool {
     return std.mem.indexOf(u8, s, "<local-command-caveat") != null or
+        std.mem.indexOf(u8, s, "<local-command-stdout") != null or
         std.mem.indexOf(u8, s, "<command-name") != null or
         std.mem.indexOf(u8, s, "<system-reminder") != null or
         std.mem.indexOf(u8, s, "<user-prompt-submit-hook") != null;
@@ -508,6 +509,16 @@ test "malformed and empty lines are skipped" {
 test "systag user messages are filtered out" {
     const input =
         "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<system-reminder>ignore me</system-reminder>\"}}\n" ++
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"keep me\"}}\n";
+    var tr = try parse(std.testing.allocator, input);
+    defer tr.deinit();
+    try std.testing.expectEqual(@as(usize, 1), tr.items.len);
+    try std.testing.expectEqualStrings("keep me", tr.items[0].text);
+}
+
+test "local-command-stdout user messages are filtered out" {
+    const input =
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<local-command-stdout>Catch you later!</local-command-stdout>\"}}\n" ++
         "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"keep me\"}}\n";
     var tr = try parse(std.testing.allocator, input);
     defer tr.deinit();

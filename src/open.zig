@@ -57,10 +57,16 @@ pub fn newestJsonl(alloc: std.mem.Allocator, dir: []const u8) !?[]u8 {
 /// Locate the newest `.jsonl` transcript for the current session/cwd under
 /// `<home>/.claude/projects/...`. Caller owns the returned slice (or null).
 pub fn findTranscript(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
-    // Strategy 1: tty-keyed file written by the SessionStart hook.
+    // Strategy 1: tty-keyed file written by the SessionStart hook. When the
+    // pointer exists but its target hasn't been created yet (fresh session),
+    // stop here: falling through to the newest-jsonl strategies would show
+    // another session's conversation.
     if (ttyKeyedTranscript(alloc)) |t| {
         if (t) |path| return path;
-    } else |_| {}
+    } else |err| switch (err) {
+        error.FreshSession => return null,
+        else => {},
+    }
 
     // Strategy 2: PWD-derived project directory.
     if (getEnv("PWD")) |pwd| {
@@ -77,10 +83,11 @@ pub fn findTranscript(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
     return globalNewest(alloc, home);
 }
 
-/// Replace '/' with '-' in `pwd` to derive the ~/.claude/projects/<key> name.
+/// Derive the ~/.claude/projects/<key> name from `pwd` the way Claude does:
+/// every non-alphanumeric character becomes '-' (".claude" -> "-claude").
 fn projectKey(alloc: std.mem.Allocator, pwd: []const u8) ![]u8 {
     const out = try alloc.alloc(u8, pwd.len);
-    for (pwd, 0..) |c, i| out[i] = if (c == '/') '-' else c;
+    for (pwd, 0..) |c, i| out[i] = if (std.ascii.isAlphanumeric(c)) c else '-';
     return out;
 }
 
@@ -105,14 +112,21 @@ fn ttyKeyedTranscript(alloc: std.mem.Allocator) !?[]u8 {
     line = std.mem.trimEnd(u8, line, " \r\t");
     if (line.len == 0) return null;
 
-    // Must be readable.
+    return (try resolvePointerTarget(alloc, line)) orelse error.FreshSession;
+}
+
+/// Resolve a transcript path written by the SessionStart hook. Claude creates
+/// the session .jsonl lazily (only after the first user message), so a fresh
+/// session's pointer can name a file that doesn't exist yet.
+fn resolvePointerTarget(alloc: std.mem.Allocator, line: []const u8) !?[]u8 {
     var nul_buf: [4096]u8 = undefined;
-    if (line.len + 1 > nul_buf.len) return null;
+    if (line.len == 0 or line.len + 1 > nul_buf.len) return null;
     @memcpy(nul_buf[0..line.len], line);
     nul_buf[line.len] = 0;
-    if (std.c.access(@ptrCast(&nul_buf), 4) != 0) return null; // R_OK
-
-    return try alloc.dupe(u8, line);
+    if (std.c.access(@ptrCast(&nul_buf), 4) == 0) return try alloc.dupe(u8, line); // R_OK
+    // Target not born yet: fresh session, nothing to show. Never guess a
+    // sibling session's transcript — that displays the wrong conversation.
+    return null;
 }
 
 /// Strategy 3: scan every project dir, return the single newest jsonl.
@@ -202,19 +216,30 @@ pub fn maybeRenderTranscript(alloc: std.mem.Allocator, home: []const u8, tty_fd:
 /// is rendered separately, color-stripped, by `maybeRenderTranscript`). Best
 /// effort; silent on any failure.
 fn printSummary(alloc: std.mem.Allocator, home: []const u8) void {
-    const transcript = (findTranscript(alloc, home) catch null) orelse return;
-    defer alloc.free(transcript);
-
     const tty_fd = term.openTty() catch return;
     defer _ = std.c.close(tty_fd);
+
+    const no_transcript = "claude-pager: no transcript yet — fresh session\n";
+
+    const transcript = (findTranscript(alloc, home) catch null) orelse {
+        _ = std.c.write(tty_fd, no_transcript, no_transcript.len);
+        return;
+    };
+    defer alloc.free(transcript);
 
     var cols: usize = 100;
     const ws = term.getWinsize(tty_fd);
     if (ws.cols > 0) cols = if (ws.cols < 120) ws.cols else 120;
 
-    const text = render_plain.renderColored(alloc, transcript, cols) catch return;
+    const text = render_plain.renderColored(alloc, transcript, cols) catch {
+        _ = std.c.write(tty_fd, no_transcript, no_transcript.len);
+        return;
+    };
     defer alloc.free(text);
-    if (text.len == 0) return;
+    if (text.len == 0) {
+        _ = std.c.write(tty_fd, no_transcript, no_transcript.len);
+        return;
+    }
 
     _ = std.c.write(tty_fd, text.ptr, text.len);
     if (text[text.len - 1] != '\n') _ = std.c.write(tty_fd, "\n", 1);
@@ -310,7 +335,9 @@ pub fn genericEditorPath(
         log.dbg("GUI path: editor forked pid={d}", .{ed_pid});
 
         // Print the static summary to the terminal (no interactive pager).
-        if (render_path != null) printSummary(alloc, home);
+        // Always called: on failure it prints a "no transcript yet" line so
+        // the terminal is never silently blank.
+        printSummary(alloc, home);
 
         const status = waitBlocking(ed_pid);
         log.dbg("editor exited status={d}", .{status});
@@ -336,7 +363,7 @@ pub fn genericEditorPath(
 
     log.dbg("optimistic probe: editor alive after 150ms — GUI confirmed", .{});
     // GUI confirmed — safe to print the static summary now.
-    if (render_path != null) printSummary(alloc, home);
+    printSummary(alloc, home);
 
     const status = waitBlocking(ed_pid);
     log.dbg("editor exited status={d}", .{status});
@@ -380,6 +407,26 @@ fn getEnv(name: []const u8) ?[]const u8 {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
+test "projectKey maps every non-alphanumeric char to '-' like Claude does" {
+    const a = std.testing.allocator;
+    // Claude derives ~/.claude/projects/<key> by replacing [^a-zA-Z0-9] with '-':
+    // "/Users/p/.claude" -> "-Users-p--claude", "github.com" -> "github-com".
+    const cases = [_][2][]const u8{
+        .{ "/Users/pavel/Notes", "-Users-pavel-Notes" },
+        .{ "/Users/pavel/.claude", "-Users-pavel--claude" },
+        .{
+            "/Users/pavel/Developer/src/github.com/FindHotel/content-pipeline",
+            "-Users-pavel-Developer-src-github-com-FindHotel-content-pipeline",
+        },
+        .{ "/tmp/repo_name", "-tmp-repo-name" },
+    };
+    for (cases) |c| {
+        const got = try projectKey(a, c[0]);
+        defer a.free(got);
+        try std.testing.expectEqualStrings(c[1], got);
+    }
+}
+
 test "newestJsonl picks the most recently modified" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -408,6 +455,46 @@ test "newestJsonl picks the most recently modified" {
 
     try std.testing.expect(got != null);
     try std.testing.expect(std.mem.endsWith(u8, got.?, "b.jsonl"));
+}
+
+test "resolvePointerTarget returns the path itself when readable" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var threaded = std.Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    try tmp.dir.writeFile(io, .{ .sub_path = "live.jsonl", .data = "x\n" });
+
+    const target = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/live.jsonl", .{tmp.sub_path});
+    defer a.free(target);
+
+    const got = try resolvePointerTarget(a, target);
+    defer if (got) |g| a.free(g);
+    try std.testing.expect(got != null);
+    try std.testing.expectEqualStrings(target, got.?);
+}
+
+test "resolvePointerTarget returns null when target is missing, even with sibling jsonls" {
+    // A pointer whose target doesn't exist yet means a fresh session with no
+    // conversation. Guessing a sibling session's transcript here showed the
+    // wrong conversation; the only correct answer is "no transcript yet".
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var threaded = std.Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    try tmp.dir.writeFile(io, .{ .sub_path = "previous.jsonl", .data = "x\n" });
+
+    const target = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/not-born-yet.jsonl", .{tmp.sub_path});
+    defer a.free(target);
+
+    const got = try resolvePointerTarget(a, target);
+    defer if (got) |g| a.free(g);
+    try std.testing.expect(got == null);
 }
 
 test "newestJsonl returns null for a missing dir" {

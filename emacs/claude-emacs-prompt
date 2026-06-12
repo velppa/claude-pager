@@ -6,6 +6,14 @@ set -euo pipefail
 
 promptfile="${1:?no prompt file given}"
 export TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"
+
+# Only Claude's Ctrl-G prompt files get the transcript-above-prompt treatment.
+# Anything else (Claude "open file in editor" actions routed through
+# claude-pager) opens as a plain Emacs buffer, without waiting.
+case "$(basename "$promptfile")" in
+  claude-prompt-*) ;;
+  *) exec emacsclient -n "$promptfile" ;;
+esac
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EL="$SCRIPT_DIR/claude-prompt.el"
 
@@ -16,8 +24,14 @@ if [[ -n "$tty_dev" && "$tty_dev" != "?"* ]]; then
   ptr="/tmp/claude-transcript-${tty_dev}"
   [[ -r "$ptr" ]] && transcript=$(<"$ptr")
 fi
-if [[ -z "$transcript" || ! -r "$transcript" ]]; then
-  key="${PWD//\//-}"
+if [[ -n "$transcript" && ! -r "$transcript" ]]; then
+  # Pointer exists but Claude hasn't created the session .jsonl yet: fresh
+  # session, nothing to show. Never guess another session's transcript.
+  transcript=""
+elif [[ -z "$transcript" ]]; then
+  # No pointer at all (hook didn't run): newest .jsonl for this project.
+  # Claude's project key: every non-alphanumeric char becomes '-'.
+  key=$(printf '%s' "$PWD" | LC_ALL=C tr -c '[:alnum:]' '-')
   transcript=$(ls -t "$HOME/.claude/projects/${key}"/*.jsonl 2>/dev/null | head -1 || true)
 fi
 
