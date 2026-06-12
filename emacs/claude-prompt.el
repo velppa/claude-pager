@@ -11,6 +11,11 @@
 (require 'json)
 (require 'subr-x)
 
+(defvar claude-prompt--pending nil
+  "Non-nil when the next server-opened buffer is a Claude prompt file.
+Set by the editor wrapper; armed even when no transcript exists yet
+(fresh session), so the keymap, header line, and separator still install.")
+
 (defvar claude-prompt--pending-transcript nil
   "Path to transcript .jsonl set by the editor wrapper just before opening.")
 
@@ -186,10 +191,13 @@ Writes an empty file so `emacsclient' returns with no prompt text."
 
 (defun claude-prompt-setup ()
   "If a transcript is pending, turn the just-opened buffer into a prompt editor."
-  (when (or claude-prompt--pending-transcript claude-prompt--pending-render)
+  (when (or claude-prompt--pending
+            claude-prompt--pending-transcript
+            claude-prompt--pending-render)
     (let ((tx claude-prompt--pending-transcript)
           (rf claude-prompt--pending-render))
-      (setq claude-prompt--pending-transcript nil
+      (setq claude-prompt--pending nil
+            claude-prompt--pending-transcript nil
             claude-prompt--pending-render nil)
       (claude-prompt--install (current-buffer) tx rf))))
 
