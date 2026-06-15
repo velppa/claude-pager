@@ -621,7 +621,12 @@ fn splitTableCells(line: []const u8, cells: [][]const u8, max_cols: usize) usize
         const s = p;
         while (p < line.len and line[p] != '|') p += 1;
         var span = trimSpan(line[s..p]);
-        if (span.len >= md_tbl_cell_max) span = span[0 .. md_tbl_cell_max - 1];
+        if (span.len >= md_tbl_cell_max) {
+            var c: usize = md_tbl_cell_max - 1;
+            // Don't split a multibyte char at the byte cap.
+            while (c > 0 and (span[c] & 0xc0) == 0x80) c -= 1;
+            span = span[0..c];
+        }
         cells[n] = span;
         n += 1;
         if (p < line.len and line[p] == '|') p += 1;
@@ -645,6 +650,9 @@ fn fitCell(dst: []u8, src: []const u8, width: usize) []u8 {
     }
     var n = width - 1;
     if (n > dst.len - 1) n = dst.len - 1;
+    // Back off to a UTF-8 char boundary so we never copy a partial multibyte
+    // char (which would emit orphan bytes like 0xe2 0x80 from a sliced — or •).
+    while (n > 0 and (src[n] & 0xc0) == 0x80) n -= 1;
     @memcpy(dst[0..n], src[0..n]);
     dst[n] = '.';
     return dst[0 .. n + 1];
@@ -1591,4 +1599,19 @@ test "pushw keeps a short line as a single slot" {
     defer l.deinitOnError();
     try l.pushw("short line");
     try std.testing.expectEqual(@as(usize, 1), l.out.items.len);
+}
+
+test "fitCell truncates on a UTF-8 boundary (no orphan bytes)" {
+    var dst: [64]u8 = undefined;
+    // "09:58 — x" — the cut at width-1 lands inside the 3-byte em dash. The
+    // result must be valid UTF-8: the partial char is dropped, not sliced.
+    const out = fitCell(&dst, "09:58 \xe2\x80\x94 x", 8);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(out));
+    try std.testing.expectEqualStrings("09:58 .", out);
+}
+
+test "fitCell keeps a multibyte char that fits whole" {
+    var dst: [64]u8 = undefined;
+    const out = fitCell(&dst, "a\xe2\x80\xa2", 10); // "a•" fits
+    try std.testing.expectEqualStrings("a\xe2\x80\xa2", out);
 }

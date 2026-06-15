@@ -63,7 +63,10 @@ pager.")
   "Return readable transcript string for JSONL-PATH, or nil."
   (when (and jsonl-path (file-readable-p jsonl-path))
     (with-temp-buffer
-      (insert-file-contents jsonl-path)
+      ;; Force utf-8: a single stray byte must not flip detection to latin-1
+      ;; and mojibake every • / — in the file.
+      (let ((coding-system-for-read 'utf-8))
+        (insert-file-contents jsonl-path))
       (let ((out '()))
         (goto-char (point-min))
         (while (not (eobp))
@@ -95,7 +98,9 @@ pager.")
   "Return contents of RENDER-PATH (pre-rendered by claude-pager), or nil."
   (when (and render-path (file-readable-p render-path))
     (with-temp-buffer
-      (insert-file-contents render-path)
+      ;; Force utf-8 (see claude-prompt--render-transcript).
+      (let ((coding-system-for-read 'utf-8))
+        (insert-file-contents render-path))
       (let ((s (string-trim (buffer-string))))
         (unless (string-empty-p s) s)))))
 
