@@ -17,11 +17,22 @@ pub fn main(init: std.process.Init) !void {
 
     log.open();
 
-    // Arg parsing: first positional is the prompt file to edit. Required.
+    // Arg parsing: flags in any position, first non-flag positional is the
+    // prompt file to edit (required). --with-summary opts into the static
+    // transcript print to the terminal (default: no summary).
     var iter = init.minimal.args.iterate();
     _ = iter.next(); // argv[0]
-    const file = iter.next() orelse {
-        std.debug.print("usage: claude-pager-open <file>\n", .{});
+    var print_summary = false;
+    var file_arg: ?[]const u8 = null;
+    while (iter.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--with-summary")) {
+            print_summary = true;
+        } else if (file_arg == null) {
+            file_arg = arg;
+        }
+    }
+    const file = file_arg orelse {
+        std.debug.print("usage: claude-pager-open [--with-summary] <file>\n", .{});
         std.process.exit(1);
     };
     // Dupe so it outlives the iterator.
@@ -75,7 +86,7 @@ pub fn main(init: std.process.Init) !void {
         const rc = try open.terminalEditorPath(alloc, home, ed, file_owned);
         std.process.exit(rc);
     } else {
-        const rc = try open.genericEditorPath(alloc, home, ed, file_owned);
+        const rc = try open.genericEditorPath(alloc, home, ed, file_owned, print_summary);
         std.process.exit(rc);
     }
 }

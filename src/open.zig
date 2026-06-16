@@ -307,15 +307,17 @@ pub fn terminalEditorPath(
 // ── Generic (GUI) editor path: editor + static summary, TUI auto-detection ──
 
 /// GUI editor flow: render context (exported to the editor + printed once as a
-/// static summary to the terminal), spawn the editor, and wait. Unknown editors
-/// get the "optimistic" probe: if the editor exits within ~150ms it is
-/// reclassified as a TUI and re-launched via terminalEditorPath (which does not
-/// print a summary, since the TUI owns the terminal).
+/// static summary to the terminal only when `print_summary` is set), spawn
+/// the editor, and wait. Unknown editors get the "optimistic" probe: if the
+/// editor exits within ~150ms it is reclassified as a TUI and re-launched via
+/// terminalEditorPath (which never prints a summary, since the TUI owns the
+/// terminal).
 pub fn genericEditorPath(
     alloc: std.mem.Allocator,
     home: []const u8,
     editor: []const u8,
     file: []const u8,
+    print_summary: bool,
 ) !u8 {
     const editorm = @import("editor.zig");
 
@@ -334,10 +336,10 @@ pub fn genericEditorPath(
         const ed_pid = spawnEditor(alloc, editor, file, false) catch return 1;
         log.dbg("GUI path: editor forked pid={d}", .{ed_pid});
 
-        // Print the static summary to the terminal (no interactive pager).
-        // Always called: on failure it prints a "no transcript yet" line so
-        // the terminal is never silently blank.
-        printSummary(alloc, home);
+        // Print the static summary to the terminal (no interactive pager) only
+        // when enabled via --with-summary. On failure it prints a "no transcript
+        // yet" line so the terminal is never silently blank.
+        if (print_summary) printSummary(alloc, home);
 
         const status = waitBlocking(ed_pid);
         log.dbg("editor exited status={d}", .{status});
@@ -362,8 +364,8 @@ pub fn genericEditorPath(
     }
 
     log.dbg("optimistic probe: editor alive after 150ms — GUI confirmed", .{});
-    // GUI confirmed — safe to print the static summary now.
-    printSummary(alloc, home);
+    // GUI confirmed — safe to print the static summary now (unless disabled).
+    if (print_summary) printSummary(alloc, home);
 
     const status = waitBlocking(ed_pid);
     log.dbg("editor exited status={d}", .{status});
