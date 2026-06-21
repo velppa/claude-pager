@@ -5,6 +5,7 @@
 //! against self-recursion, then dispatches to the terminal- or GUI-editor path.
 
 const std = @import("std");
+const build_options = @import("build_options");
 const settings = @import("settings.zig");
 const editor = @import("editor.zig");
 const open = @import("open.zig");
@@ -25,14 +26,17 @@ pub fn main(init: std.process.Init) !void {
     var print_summary = false;
     var file_arg: ?[]const u8 = null;
     while (iter.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--with-summary")) {
+        if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
+            std.debug.print("{s}\n", .{build_options.version});
+            std.process.exit(0);
+        } else if (std.mem.eql(u8, arg, "--with-summary")) {
             print_summary = true;
         } else if (file_arg == null) {
             file_arg = arg;
         }
     }
     const file = file_arg orelse {
-        std.debug.print("usage: claude-pager-open [--with-summary] <file>\n", .{});
+        std.debug.print("usage: claude-pager-open [--with-summary] <file>\n       claude-pager-open --version\n", .{});
         std.process.exit(1);
     };
     // Dupe so it outlives the iterator.
