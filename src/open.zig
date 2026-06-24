@@ -57,12 +57,16 @@ pub fn newestJsonl(alloc: std.mem.Allocator, dir: []const u8) !?[]u8 {
 /// Locate the newest `.jsonl` transcript for the current session/cwd under
 /// `<home>/.claude/projects/...`. Caller owns the returned slice (or null).
 pub fn findTranscript(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
-    // Strategy 1: tty-keyed file written by the SessionStart hook. If the
-    // pointer is missing or its target isn't readable, fall through to the
-    // newest-jsonl strategies rather than giving up.
+    // Strategy 1: tty-keyed file written by the SessionStart hook. When the
+    // pointer exists but its target hasn't been created yet (fresh session),
+    // stop here: falling through to the newest-jsonl strategies would show
+    // another session's conversation.
     if (ttyKeyedTranscript(alloc)) |t| {
         if (t) |path| return path;
-    } else |_| {}
+    } else |err| switch (err) {
+        error.FreshSession => return null,
+        else => {},
+    }
 
     // Strategy 2: PWD-derived project directory.
     if (getEnv("PWD")) |pwd| {
@@ -108,7 +112,7 @@ fn ttyKeyedTranscript(alloc: std.mem.Allocator) !?[]u8 {
     line = std.mem.trimEnd(u8, line, " \r\t");
     if (line.len == 0) return null;
 
-    return resolvePointerTarget(alloc, line);
+    return (try resolvePointerTarget(alloc, line)) orelse error.FreshSession;
 }
 
 /// Resolve a transcript path written by the SessionStart hook. Claude creates
