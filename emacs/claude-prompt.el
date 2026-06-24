@@ -25,6 +25,11 @@ When set, its contents are used as the read-only context verbatim instead
 of rendering the .jsonl ourselves, keeping a single source of truth with the
 pager.")
 
+(defvar-local claude-prompt--render-file nil
+  "Buffer-local copy of the claude-pager render file for this prompt buffer.
+Deleted on buffer kill (C-c C-c, C-c C-k, or manual kill); the pager names
+it /tmp/claude-pager-render-<pid>.txt and never cleans it up itself.")
+
 (defconst claude-prompt-separator
   "----->8=----- TYPE PROMPT BELOW – text above is read-only context -----"
   "Marker line; everything below it is sent as the prompt.")
@@ -113,6 +118,11 @@ verbatim; otherwise render TRANSCRIPT-PATH (.jsonl) ourselves."
     ;; can trigger markdown-mode otherwise. Switch first; it kills local vars,
     ;; so all setq-local/hooks below must follow it.
     (fundamental-mode)
+    ;; Remember the render file so we can unlink it when the buffer dies; the
+    ;; pager exec's away and cannot clean up after itself.
+    (when (and render-path (file-exists-p render-path))
+      (setq-local claude-prompt--render-file render-path)
+      (add-hook 'kill-buffer-hook #'claude-prompt--cleanup-render nil t))
     (let* ((draft (buffer-string))
            (rendered (or (claude-prompt--read-render render-path)
                          (claude-prompt--render-transcript transcript-path)))
@@ -177,6 +187,13 @@ Falls back to the recorded marker, then point-min."
       (write-region body nil buffer-file-name nil 'quiet)
       (set-buffer-modified-p nil)
       t)))
+
+(defun claude-prompt--cleanup-render ()
+  "Delete this buffer's claude-pager render file if it still exists."
+  (when (and claude-prompt--render-file
+             (file-exists-p claude-prompt--render-file))
+    (ignore-errors (delete-file claude-prompt--render-file)))
+  (setq claude-prompt--render-file nil))
 
 (defun claude-prompt-finish ()
   "Save the prompt body and kill the buffer, returning control to emacsclient.
