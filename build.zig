@@ -2,15 +2,15 @@ const std = @import("std");
 
 /// Compute the v0.N.9OCTAL version at configure time.
 ///   N      = total commit count on HEAD.
-///   9OCTAL = the full commit SHA re-encoded base-16 → base-8, prefixed with
-///            `9` so the (otherwise 0-7 only) octal run is self-identifying and
-///            decodable back to the SHA.
+///   9OCTAL = the 6-char short commit SHA re-encoded base-16 → base-8, prefixed
+///            with `9` so the (otherwise 0-7 only) octal run is self-identifying
+///            and decodable back to the short SHA.
 /// Falls back to "v0.0.9dev" outside a git checkout.
 fn computeVersion(b: *std.Build) []const u8 {
     const script =
         \\set -e
         \\N=$(git rev-list --count HEAD)
-        \\SHA=$(git rev-parse HEAD)
+        \\SHA=$(git rev-parse HEAD | cut -c1-6)
         \\OCT=$(echo "obase=8; ibase=16; $(echo "$SHA" | tr a-z A-Z)" | bc | tr -d '\\\n')
         \\printf 'v0.%s.9%s' "$N" "$OCT"
     ;

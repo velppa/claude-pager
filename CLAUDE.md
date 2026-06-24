@@ -24,9 +24,9 @@ Fast Zig transcript pager for Claude Code, with Emacs prompt-editing integration
 This project uses **v0.N.9OCTAL** versioning:
 
 - `N` = total commit count on `HEAD` (`git rev-list --count HEAD`).
-- `9OCTAL` = the full commit SHA re-encoded hex→octal, prefixed with `9`. The
-  `9` is self-identifying (octal digits are only 0-7) and the value decodes
-  back to the SHA: `echo "obase=16; ibase=8; <octal>" | bc`.
+- `9OCTAL` = the 6-char short commit SHA re-encoded hex→octal, prefixed with
+  `9`. The `9` is self-identifying (octal digits are only 0-7) and the value
+  decodes back to the short SHA: `echo "obase=16; ibase=8; <octal>" | bc`.
 
 Computed at build time in `build.zig` (`computeVersion`) and exposed as the
 `build_options.version` constant. Print it with `claude-pager --version`.
