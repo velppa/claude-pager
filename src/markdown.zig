@@ -252,10 +252,9 @@ fn renderTableBlock(
         }
     }
 
-    // Clamp 3..32, then shrink to fit terminal.
+    // Floor at 3, then shrink to fit terminal.
     var sum: usize = 0;
     for (0..ncol) |c| {
-        if (widths[c] > 32) widths[c] = 32;
         if (widths[c] < 3) widths[c] = 3;
         sum += widths[c];
     }
@@ -646,6 +645,19 @@ test "renderBlock renders a markdown table with box rules" {
     try std.testing.expect(std.mem.indexOf(u8, lines[1], ansi.vl) != null); // │
     try std.testing.expect(std.mem.indexOf(u8, lines[4], ansi.bl) != null); // └
     try std.testing.expect(std.mem.indexOf(u8, lines[4], "\xe2\x94\xb4") != null); // ┴
+}
+
+test "renderBlock table keeps cell wider than 32 chars intact when width allows" {
+    const a = std.testing.allocator;
+    const url = "https://mist.findhotel.workers.dev/auth/callback";
+    const md = "| Field | Value |\n|---|---|\n| Redirect URI | https://mist.findhotel.workers.dev/auth/callback |\n";
+    const lines = try renderBlock(a, md, 100);
+    defer {
+        for (lines) |l| a.free(l);
+        a.free(lines);
+    }
+    try std.testing.expectEqual(@as(usize, 5), lines.len);
+    try std.testing.expect(std.mem.indexOf(u8, lines[3], url) != null);
 }
 
 test "renderBlock table not detected below 72 cols" {

@@ -166,6 +166,18 @@ test "render_plain transform matches golden sample2" {
     try std.testing.expectEqualStrings(@embedFile("fixtures/sample2.plain.txt"), built);
 }
 
+test "render_plain keeps table cells wider than 32 chars intact" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const jsonl =
+        \\{"type":"assistant","message":{"content":[{"type":"text","text":"| Field | Value |\n|---|---|\n| Redirect URI | https://mist.findhotel.workers.dev/auth/callback |\n"}]}}
+        \\
+    ;
+    const built = try buildPlain(a, jsonl, 110);
+    try std.testing.expect(std.mem.indexOf(u8, built, "https://mist.findhotel.workers.dev/auth/callback") != null);
+}
+
 test "rtrim drops trailing space/tab/cr only" {
     try std.testing.expectEqualStrings("abc", rtrim("abc   \t\r"));
     try std.testing.expectEqualStrings("a b", rtrim("a b"));

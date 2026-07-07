@@ -777,7 +777,6 @@ fn renderTableBlock(
     }
     var sum: usize = 0;
     for (0..ncol) |c| {
-        if (widths[c] > 32) widths[c] = 32;
         if (widths[c] < 3) widths[c] = 3;
         sum += widths[c];
     }
