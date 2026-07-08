@@ -341,7 +341,7 @@ pub fn genericEditorPath(
         // yet" line so the terminal is never silently blank.
         if (print_summary) printSummary(alloc, home);
 
-        const status = waitBlocking(ed_pid);
+        const status = waitEditorQuiet(ed_pid);
         log.dbg("editor exited status={d}", .{status});
         return 0;
     }
@@ -367,7 +367,7 @@ pub fn genericEditorPath(
     // GUI confirmed — safe to print the static summary now (unless disabled).
     if (print_summary) printSummary(alloc, home);
 
-    const status = waitBlocking(ed_pid);
+    const status = waitEditorQuiet(ed_pid);
     log.dbg("editor exited status={d}", .{status});
     return 0;
 }
@@ -377,6 +377,22 @@ fn waitBlocking(pid: std.posix.pid_t) c_int {
     var status: c_int = 0;
     _ = std.c.waitpid(pid, &status, 0);
     return status;
+}
+
+/// Wait for the editor with the tty in raw mode. Claude Code leaves focus
+/// tracking (DECSET 1004) enabled while the editor runs, so switching focus
+/// to the editor makes the terminal send ESC[O/ESC[I; with ECHO on the
+/// kernel paints those over Claude's UI and its differential repaint then
+/// scrambles. Raw mode (not merely ECHO off) matters: canonical-mode-with-
+/// echo-off is the pty signature terminal emulators read as "child is asking
+/// for a password" (e.g. ghostel pops read-passwd on it), while raw+no-echo
+/// is ordinary TUI state. The escapes stay queued for Claude to consume.
+fn waitEditorQuiet(pid: std.posix.pid_t) c_int {
+    const tty_fd = term.openTty() catch return waitBlocking(pid);
+    defer _ = std.c.close(tty_fd);
+    const quiet = term.RawMode.enable(tty_fd) catch return waitBlocking(pid);
+    defer quiet.restore();
+    return waitBlocking(pid);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

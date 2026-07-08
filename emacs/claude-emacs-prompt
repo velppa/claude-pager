@@ -48,4 +48,7 @@ emacsclient -e "(progn (load \"$EL\" nil t) (setq claude-prompt--pending t claud
   >/dev/null 2>&1 || true
 
 # --- open the prompt file; blocks until C-x # ---
-exec emacsclient "$promptfile"
+# Silence emacsclient's "Waiting for Emacs..." chatter: any byte written to
+# the terminal here lands on top of Claude Code's UI and desyncs its
+# differential repaint (the screen scrambles after the editor returns).
+exec emacsclient "$promptfile" >/dev/null 2>&1
