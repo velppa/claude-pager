@@ -8,7 +8,6 @@ REPO_BRANCH="zig-rewrite"
 INSTALL_DIR="${HOME}/.claude-pager"
 BINARY="${INSTALL_DIR}/bin/claude-pager"
 SETTINGS="${HOME}/.claude/settings.json"
-HOOK_SESSION="${INSTALL_DIR}/shim/save-session-transcript.sh"
 
 infer_editor_type() {
     local cmd="$1"
@@ -23,50 +22,6 @@ infer_editor_type() {
             echo "gui"
             ;;
     esac
-}
-
-apply_jq() {
-    local argc=$#
-    local filter="${!argc}"
-    local jq_args=()
-    if (( argc > 1 )); then
-        jq_args=("${@:1:argc-1}")
-    fi
-    local tmp
-    tmp=$(mktemp)
-    if (( ${#jq_args[@]} > 0 )); then
-        jq "${jq_args[@]}" "$filter" "$SETTINGS" > "$tmp"
-    else
-        jq "$filter" "$SETTINGS" > "$tmp"
-    fi
-    mv "$tmp" "$SETTINGS"
-}
-
-normalize_hook_events() {
-    apply_jq '
-        def normalize_event_array:
-            if type == "array" then
-                map(
-                    if (type == "object" and (.hooks? | type) == "array") then
-                        .
-                    elif (type == "object" and .type == "command" and (.command? | type) == "string") then
-                        {hooks: [(
-                            if has("timeout") then
-                                {type, command, timeout}
-                            else
-                                {type, command}
-                            end
-                        )]}
-                    else
-                        .
-                    end
-                )
-            else
-                []
-            end;
-        .hooks = (if (.hooks | type) == "object" then .hooks else {} end) |
-        .hooks.SessionStart = ((.hooks.SessionStart // []) | normalize_event_array)
-    '
 }
 
 echo "Installing claude-pager..."
@@ -210,35 +165,6 @@ if [[ -n "$FINAL_EDITOR" ]]; then
     jq --arg ty "$FINAL_EDITOR_TYPE" '.env.CLAUDE_PAGER_EDITOR_TYPE = $ty' "$SETTINGS" > "$SETTINGS_TMP"
     mv "$SETTINGS_TMP" "$SETTINGS"
     echo "Set editor type: $FINAL_EDITOR_TYPE"
-fi
-
-# ── Hooks ───────────────────────────────────────────────────────────────────
-normalize_hook_events
-
-if jq -e --arg cmd "$HOOK_SESSION" '.hooks.SessionStart[]?.hooks[]? | select(.command == $cmd)' "$SETTINGS" &>/dev/null; then
-    echo "SessionStart hook already configured"
-else
-    apply_jq --arg cmd "$HOOK_SESSION" '
-        .hooks.SessionStart += [{
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": $cmd
-                }
-            ]
-        }]
-    '
-    echo "Added SessionStart hook"
-fi
-
-if ! jq -e '
-    (.hooks.SessionStart | type) == "array" and
-    any(.hooks.SessionStart[]?; (.hooks | type) == "array") and
-    any(.hooks.SessionStart[]?.hooks[]?; (.type == "command") and (.command == $session_cmd))
-' --arg session_cmd "$HOOK_SESSION" "$SETTINGS" >/dev/null; then
-    echo "ERROR: Claude hook installation failed validation." >&2
-    echo "Expected a nested hook group with a hooks[] array for SessionStart." >&2
-    exit 1
 fi
 
 echo ""

@@ -24,59 +24,76 @@ extern "c" fn fork() std.c.pid_t;
 // ── Transcript finding (pure, no process spawns) ────────────────────────────
 
 /// Locate the current session's transcript under `<home>/.claude/projects/...`,
-/// or null when it can't be identified. The session is pinned by whichever
-/// identifier this session type exposes — the session UUID, or the bridge id
-/// mapped to a transcript by the SessionStart hook — never by cwd/newest-jsonl
-/// guessing. When neither pins it, the honest answer is "no transcript" rather
-/// than another session's conversation. Caller owns the slice.
+/// or null when it can't be identified. The editor is spawned with only
+/// CLAUDE_CODE_BRIDGE_SESSION_ID; Claude Code's session registry maps that to the
+/// session UUID that names the transcript. Resolution is exact — never
+/// cwd/newest-jsonl guessing — so an unidentified session yields "no transcript"
+/// rather than another session's conversation. Caller owns the slice.
 pub fn findTranscript(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
-    if (try sessionIdTranscript(alloc, home)) |path| return path;
-    return bridgePointerTranscript(alloc);
+    // Some contexts expose the UUID directly.
+    if (getEnv("CLAUDE_CODE_SESSION_ID")) |sid| {
+        if (uuidValid(sid)) {
+            if (try transcriptForUuid(alloc, home, sid)) |p| return p;
+        }
+    }
+    // The editor only gets the bridge id; look up its UUID in the registry.
+    if (try uuidFromBridge(alloc, home)) |uuid| {
+        defer alloc.free(uuid);
+        return transcriptForUuid(alloc, home, uuid);
+    }
+    return null;
 }
 
-/// Bridge/harness sessions (e.g. the desktop app) expose only
-/// CLAUDE_CODE_BRIDGE_SESSION_ID to the editor, not the session UUID. The
-/// SessionStart hook records the transcript path in
-/// /tmp/claude-transcript-bridge-<id>; read it and confirm the target exists
-/// (a just-started session's .jsonl may not be born yet).
-fn bridgePointerTranscript(alloc: std.mem.Allocator) !?[]u8 {
+/// A session id is a bare UUID; anything with a path separator (or NUL) is
+/// rejected so it can never escape the projects directory when interpolated.
+fn uuidValid(sid: []const u8) bool {
+    if (sid.len == 0) return false;
+    for (sid) |c| if (c == '/' or c == 0) return false;
+    return true;
+}
+
+/// Map CLAUDE_CODE_BRIDGE_SESSION_ID to the session UUID via Claude Code's
+/// session registry (~/.claude/sessions/<pid>.json, each carrying bridgeSessionId
+/// and sessionId). Returns the UUID, or null when the bridge id is unset or no
+/// registry entry matches. Caller owns the slice.
+fn uuidFromBridge(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
     const bid = getEnv("CLAUDE_CODE_BRIDGE_SESSION_ID") orelse return null;
     if (bid.len == 0) return null;
-    for (bid) |c| if (c == '/' or c == 0) return null;
 
-    const path = try std.fmt.allocPrint(alloc, "/tmp/claude-transcript-bridge-{s}", .{bid});
-    defer alloc.free(path);
+    const sessions_dir = try std.fmt.allocPrint(alloc, "{s}/.claude/sessions", .{home});
+    defer alloc.free(sessions_dir);
 
     var threaded = std.Io.Threaded.init(alloc, .{});
     defer threaded.deinit();
     const io = threaded.io();
 
-    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(8192)) catch return null;
-    defer alloc.free(bytes);
+    var sd = std.Io.Dir.cwd().openDir(io, sessions_dir, .{ .iterate = true }) catch return null;
+    defer sd.close(io);
 
-    var line: []const u8 = bytes;
-    if (std.mem.indexOfScalar(u8, line, '\n')) |nl| line = line[0..nl];
-    line = std.mem.trimEnd(u8, line, " \r\t");
-    if (line.len == 0) return null;
-
-    var nul: [4096]u8 = undefined;
-    if (line.len + 1 > nul.len) return null;
-    @memcpy(nul[0..line.len], line);
-    nul[line.len] = 0;
-    if (std.c.access(@ptrCast(&nul), 4) != 0) return null; // R_OK
-    return try alloc.dupe(u8, line);
+    var it = sd.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (!std.mem.endsWith(u8, entry.name, ".json")) continue;
+        const path = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ sessions_dir, entry.name });
+        defer alloc.free(path);
+        const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(65536)) catch continue;
+        defer alloc.free(bytes);
+        var parsed = std.json.parseFromSlice(std.json.Value, alloc, bytes, .{}) catch continue;
+        defer parsed.deinit();
+        if (parsed.value != .object) continue;
+        const obj = parsed.value.object;
+        const b = obj.get("bridgeSessionId") orelse continue;
+        if (b != .string or !std.mem.eql(u8, b.string, bid)) continue;
+        const s = obj.get("sessionId") orelse continue;
+        if (s != .string or !uuidValid(s.string)) continue;
+        return try alloc.dupe(u8, s.string);
+    }
+    return null;
 }
 
-/// Locate the transcript for the session named by CLAUDE_CODE_SESSION_ID.
-/// Claude Code names each transcript <session-id>.jsonl under some project dir;
-/// the session's cwd may differ from the current one, so every project dir is
-/// searched. Returns null when the variable is unset or no matching file exists.
-fn sessionIdTranscript(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
-    const sid = getEnv("CLAUDE_CODE_SESSION_ID") orelse return null;
-    if (sid.len == 0) return null;
-    // A session id is a bare UUID; reject anything with path separators so it
-    // can never escape the projects directory.
-    for (sid) |c| if (c == '/' or c == 0) return null;
+/// Locate <uuid>.jsonl under any project dir (the session's cwd may differ from
+/// the current one). Returns null when no matching file exists.
+fn transcriptForUuid(alloc: std.mem.Allocator, home: []const u8, uuid: []const u8) !?[]u8 {
+    if (!uuidValid(uuid)) return null;
 
     const projects_dir = try std.fmt.allocPrint(alloc, "{s}/.claude/projects", .{home});
     defer alloc.free(projects_dir);
@@ -91,7 +108,7 @@ fn sessionIdTranscript(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
     var it = pd.iterate();
     while (it.next(io) catch null) |entry| {
         if (entry.name.len == 0 or entry.name[0] == '.') continue;
-        const candidate = try std.fmt.allocPrint(alloc, "{s}/{s}/{s}.jsonl", .{ projects_dir, entry.name, sid });
+        const candidate = try std.fmt.allocPrint(alloc, "{s}/{s}/{s}.jsonl", .{ projects_dir, entry.name, uuid });
         if (std.Io.Dir.cwd().statFile(io, candidate, .{})) |_| {
             return candidate;
         } else |_| {
@@ -364,7 +381,7 @@ fn getEnv(name: []const u8) ?[]const u8 {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-test "sessionIdTranscript resolves the exact session, not the newest sibling" {
+test "transcriptForUuid resolves the exact session, not the newest sibling" {
     const a = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -373,8 +390,8 @@ test "sessionIdTranscript resolves the exact session, not the newest sibling" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    // Two sessions sharing one project dir: our session's transcript, plus a
-    // newer sibling that the newest-jsonl heuristic would wrongly prefer.
+    // Two sessions sharing one project dir: ours, plus a newer sibling that a
+    // newest-jsonl heuristic would wrongly prefer.
     try tmp.dir.createDirPath(io, ".claude/projects/proj");
     try tmp.dir.writeFile(io, .{ .sub_path = ".claude/projects/proj/mine.jsonl", .data = "m\n" });
     sleepMs(1_100);
@@ -383,23 +400,18 @@ test "sessionIdTranscript resolves the exact session, not the newest sibling" {
     const home = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer a.free(home);
 
-    _ = setenv("CLAUDE_CODE_SESSION_ID", "mine", 1);
-    defer _ = setenv("CLAUDE_CODE_SESSION_ID", "", 1);
-
-    const got = try sessionIdTranscript(a, home);
+    const got = try transcriptForUuid(a, home, "mine");
     defer if (got) |g| a.free(g);
     try std.testing.expect(got != null);
     try std.testing.expect(std.mem.endsWith(u8, got.?, "proj/mine.jsonl"));
 }
 
-test "sessionIdTranscript returns null when the id names no file" {
-    _ = setenv("CLAUDE_CODE_SESSION_ID", "no-such-session", 1);
-    defer _ = setenv("CLAUDE_CODE_SESSION_ID", "", 1);
-    const got = try sessionIdTranscript(std.testing.allocator, "/nonexistent/home/xyz");
+test "transcriptForUuid returns null when the uuid names no file" {
+    const got = try transcriptForUuid(std.testing.allocator, "/nonexistent/home/xyz", "no-such-session");
     try std.testing.expect(got == null);
 }
 
-test "bridgePointerTranscript resolves via the hook-written pointer" {
+test "uuidFromBridge maps the bridge id to the session UUID via the registry" {
     const a = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -408,43 +420,32 @@ test "bridgePointerTranscript resolves via the hook-written pointer" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    // A real transcript target, plus the pointer the SessionStart hook writes.
-    try tmp.dir.writeFile(io, .{ .sub_path = "t.jsonl", .data = "x\n" });
-    const target = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/t.jsonl", .{tmp.sub_path});
-    defer a.free(target);
+    // Two registry entries; only the matching bridge id must be picked.
+    try tmp.dir.createDirPath(io, ".claude/sessions");
+    try tmp.dir.writeFile(io, .{
+        .sub_path = ".claude/sessions/111.json",
+        .data = "{\"pid\":111,\"sessionId\":\"other-uuid\",\"bridgeSessionId\":\"session_other\"}",
+    });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = ".claude/sessions/222.json",
+        .data = "{\"pid\":222,\"sessionId\":\"the-uuid\",\"bridgeSessionId\":\"session_wanted\"}",
+    });
 
-    const bid = "claude-pager-open-zig-unit-test";
-    const ptr = "/tmp/claude-transcript-bridge-" ++ "claude-pager-open-zig-unit-test";
-    const line = try std.fmt.allocPrint(a, "{s}\n", .{target});
-    defer a.free(line);
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = ptr, .data = line });
-    defer std.Io.Dir.cwd().deleteFile(io, ptr) catch {};
+    const home = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer a.free(home);
 
-    _ = setenv("CLAUDE_CODE_BRIDGE_SESSION_ID", bid, 1);
+    _ = setenv("CLAUDE_CODE_BRIDGE_SESSION_ID", "session_wanted", 1);
     defer _ = setenv("CLAUDE_CODE_BRIDGE_SESSION_ID", "", 1);
 
-    const got = try bridgePointerTranscript(a);
+    const got = try uuidFromBridge(a, home);
     defer if (got) |g| a.free(g);
     try std.testing.expect(got != null);
-    try std.testing.expectEqualStrings(target, got.?);
+    try std.testing.expectEqualStrings("the-uuid", got.?);
 }
 
-test "bridgePointerTranscript returns null when the pointer target is gone" {
-    // A pointer naming a not-yet-born transcript must not resolve (fresh session).
-    const a = std.testing.allocator;
-    var threaded = std.Io.Threaded.init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    const bid = "claude-pager-open-zig-missing-test";
-    const ptr = "/tmp/claude-transcript-bridge-" ++ "claude-pager-open-zig-missing-test";
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = ptr, .data = "/nonexistent/xyz.jsonl\n" });
-    defer std.Io.Dir.cwd().deleteFile(io, ptr) catch {};
-
-    _ = setenv("CLAUDE_CODE_BRIDGE_SESSION_ID", bid, 1);
+test "uuidFromBridge returns null when no registry entry matches" {
+    _ = setenv("CLAUDE_CODE_BRIDGE_SESSION_ID", "session_absent", 1);
     defer _ = setenv("CLAUDE_CODE_BRIDGE_SESSION_ID", "", 1);
-
-    const got = try bridgePointerTranscript(a);
-    defer if (got) |g| a.free(g);
+    const got = try uuidFromBridge(std.testing.allocator, "/nonexistent/home/xyz");
     try std.testing.expect(got == null);
 }
