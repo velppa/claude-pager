@@ -637,40 +637,172 @@ fn splitTableCells(line: []const u8, cells: [][]const u8, max_cols: usize) usize
     return n;
 }
 
-// md_fit_cell: fit `src` into width `width`.
-fn fitCell(dst: []u8, src: []const u8, width: usize) []u8 {
-    if (src.len <= width) {
-        const n = @min(src.len, dst.len);
-        @memcpy(dst[0..n], src[0..n]);
-        return dst[0..n];
-    }
-    if (width <= 1) {
-        dst[0] = '.';
-        return dst[0..1];
-    }
-    var n = width - 1;
-    if (n > dst.len - 1) n = dst.len - 1;
-    // Back off to a UTF-8 char boundary so we never copy a partial multibyte
-    // char (which would emit orphan bytes like 0xe2 0x80 from a sliced — or •).
-    while (n > 0 and (src[n] & 0xc0) == 0x80) n -= 1;
-    @memcpy(dst[0..n], src[0..n]);
-    dst[n] = '.';
-    return dst[0 .. n + 1];
+// Terminal column width of a single codepoint: 0 for combining/zero-width marks,
+// 2 for East-Asian wide / fullwidth / emoji, else 1. Enough to align the glyphs
+// that show up in transcripts (dashes, accents, CJK, emoji); not a full wcwidth.
+fn charWidth(cp: u21) usize {
+    if (cp == 0) return 0;
+    if ((cp >= 0x300 and cp <= 0x36F) or // combining diacriticals
+        (cp >= 0x200B and cp <= 0x200F) or // ZW space/joiners/marks
+        (cp >= 0x1AB0 and cp <= 0x1AFF) or
+        (cp >= 0x1DC0 and cp <= 0x1DFF) or
+        (cp >= 0x20D0 and cp <= 0x20FF) or
+        (cp >= 0xFE00 and cp <= 0xFE0F) or // variation selectors
+        cp == 0x2060) return 0;
+    if ((cp >= 0x1100 and cp <= 0x115F) or // Hangul Jamo
+        (cp >= 0x2E80 and cp <= 0x303E) or
+        (cp >= 0x3041 and cp <= 0x33FF) or
+        (cp >= 0x3400 and cp <= 0x4DBF) or
+        (cp >= 0x4E00 and cp <= 0x9FFF) or // CJK unified
+        (cp >= 0xA000 and cp <= 0xA4CF) or
+        (cp >= 0xAC00 and cp <= 0xD7A3) or // Hangul syllables
+        (cp >= 0xF900 and cp <= 0xFAFF) or
+        (cp >= 0xFE30 and cp <= 0xFE4F) or
+        (cp >= 0xFF00 and cp <= 0xFF60) or // fullwidth forms
+        (cp >= 0xFFE0 and cp <= 0xFFE6) or
+        (cp >= 0x1F300 and cp <= 0x1FAFF) or // emoji
+        (cp >= 0x20000 and cp <= 0x3FFFD)) return 2; // CJK ext
+    return 1;
 }
 
-// md_cell_label: fit a table cell to `width`. URL/path
-// shortening was removed with link rendering; long cells hard-truncate.
-fn cellLabel(a: std.mem.Allocator, dst: []u8, src: []const u8, width: usize) ![]u8 {
-    _ = a;
-    return fitCell(dst, src, width);
+// Display width of plain (non-ANSI) text in terminal columns. Table column math
+// must use this, not byte length, or dash-heavy cells read as far wider than
+// they display and get needlessly shrunk/truncated.
+fn dispCols(s: []const u8) usize {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < s.len) {
+        const len = std.unicode.utf8ByteSequenceLength(s[i]) catch {
+            i += 1;
+            n += 1;
+            continue;
+        };
+        if (i + len > s.len) break;
+        const cp = std.unicode.utf8Decode(s[i .. i + len]) catch {
+            i += 1;
+            n += 1;
+            continue;
+        };
+        n += charWidth(cp);
+        i += len;
+    }
+    return n;
 }
 
-// md_cell_target: previously returned an OSC-8 target URI
-// for clickable table cells. Link rendering was removed, so there is never a
-// target — always empty (no link).
-fn cellTarget(a: std.mem.Allocator, src: []const u8) ![]u8 {
-    _ = src;
-    return a.dupe(u8, "");
+// Byte offset at which `s` reaches `cols` display columns, without splitting or
+// overshooting a wide glyph across the boundary.
+fn byteForCols(s: []const u8, cols: usize) usize {
+    var i: usize = 0;
+    var w: usize = 0;
+    while (i < s.len) {
+        const len = std.unicode.utf8ByteSequenceLength(s[i]) catch {
+            if (w + 1 > cols) break;
+            i += 1;
+            w += 1;
+            continue;
+        };
+        if (i + len > s.len) break;
+        const cp = std.unicode.utf8Decode(s[i .. i + len]) catch {
+            if (w + 1 > cols) break;
+            i += len;
+            w += 1;
+            continue;
+        };
+        const cw = charWidth(cp);
+        if (w + cw > cols) break;
+        w += cw;
+        i += len;
+    }
+    return i;
+}
+
+// Break `src` into as many lines as needed so each fits within `width` display
+// columns. Lines break at spaces; a single word wider than the column is split
+// across lines on a codepoint boundary. The break-point spaces are dropped, so
+// each returned segment is a contiguous, space-trimmed slice of `src`. Text that
+// already fits yields a single segment; empty text yields one empty segment. The
+// segment list is freshly allocated (the segment bytes alias `src`).
+fn wrapCell(a: std.mem.Allocator, src: []const u8, width: usize) ![]const []const u8 {
+    var segs: std.ArrayListUnmanaged([]const u8) = .empty;
+    const w = if (width < 1) 1 else width;
+    var i: usize = 0;
+    while (i < src.len) {
+        while (i < src.len and src[i] == ' ') i += 1; // drop leading spaces
+        if (i >= src.len) break;
+        const line_start = i;
+        var line_end = i;
+        var line_w: usize = 0;
+        while (i < src.len) {
+            const ws = i;
+            var we = i;
+            while (we < src.len and src[we] != ' ') we += 1;
+            const word = src[ws..we];
+            const word_w = dispCols(word);
+            if (line_w == 0) {
+                if (word_w <= w) {
+                    line_w = word_w;
+                    line_end = we;
+                    i = we;
+                } else {
+                    // Word alone overflows the column: take what fits, leave the
+                    // rest for the next line.
+                    const take = byteForCols(word, w);
+                    line_end = ws + take;
+                    i = ws + take;
+                    break;
+                }
+            } else if (line_w + 1 + word_w <= w) {
+                line_w += 1 + word_w;
+                line_end = we;
+                i = we;
+            } else {
+                break; // next word starts a fresh line
+            }
+            while (i < src.len and src[i] == ' ') i += 1;
+        }
+        try segs.append(a, src[line_start..line_end]);
+    }
+    if (segs.items.len == 0) try segs.append(a, src[0..0]);
+    return segs.toOwnedSlice(a);
+}
+
+// Emit one logical table row (header or body) as one or more visual lines: each
+// cell is wrapped to its column width and the row is as tall as its tallest
+// cell, with shorter cells blank-padded so every line has equal display width
+// and the borders align. Header cells render bold.
+fn emitWrappedRow(l: *Lines, wslice: []const usize, ncol: usize, srcs: []const []const u8, is_header: bool) !void {
+    const a = l.alloc;
+    var segs: [md_tbl_max_cols][]const []const u8 = undefined;
+    var height: usize = 1;
+    for (0..ncol) |c| {
+        segs[c] = try wrapCell(a, srcs[c], wslice[c]);
+        if (segs[c].len > height) height = segs[c].len;
+    }
+    var k: usize = 0;
+    while (k < height) : (k += 1) {
+        var ln: std.ArrayListUnmanaged(u8) = .empty;
+        defer ln.deinit(a);
+        try ln.appendSlice(a, ansi.c_hdm);
+        try ln.appendSlice(a, "  ");
+        try ln.appendSlice(a, ansi.vl);
+        try ln.appendSlice(a, ansi.reset);
+        for (0..ncol) |c| {
+            const seg = if (k < segs[c].len) segs[c][k] else "";
+            if (is_header) try ln.appendSlice(a, ansi.bold);
+            try ln.appendSlice(a, ansi.c_ast);
+            try ln.append(a, ' ');
+            try ln.appendSlice(a, seg);
+            const vis = dispCols(seg);
+            const pad = if (wslice[c] > vis) wslice[c] - vis else 0;
+            try ln.appendNTimes(a, ' ', pad);
+            try ln.append(a, ' ');
+            try ln.appendSlice(a, ansi.reset);
+            try ln.appendSlice(a, ansi.c_hdm);
+            try ln.appendSlice(a, ansi.vl);
+            try ln.appendSlice(a, ansi.reset);
+        }
+        try l.pushwLink(ln.items);
+    }
 }
 
 // Render a markdown table starting at `header_line`. Returns true if a table was
@@ -756,7 +888,6 @@ fn renderTableBlock(
     rows: []const [md_tbl_max_cols][]u8,
     ncol_in: usize,
 ) !void {
-    const a = l.alloc;
     const cols = l.cols;
     var ncol = ncol_in;
     if (ncol > md_tbl_max_cols) ncol = md_tbl_max_cols;
@@ -767,12 +898,14 @@ fn renderTableBlock(
     {
         var c: usize = 0;
         while (c < hcols and c < ncol) : (c += 1) {
-            if (header[c].len > widths[c]) widths[c] = header[c].len;
+            const wl = dispCols(header[c]);
+            if (wl > widths[c]) widths[c] = wl;
         }
     }
     for (rows) |row| {
         for (0..ncol) |c| {
-            if (row[c].len > widths[c]) widths[c] = row[c].len;
+            const wl = dispCols(row[c]);
+            if (wl > widths[c]) widths[c] = wl;
         }
     }
     var sum: usize = 0;
@@ -784,91 +917,43 @@ fn renderTableBlock(
     var max_sum: usize = if (cols > overhead) cols - overhead else 0;
     const min_sum = ncol * 3;
     if (max_sum < min_sum) max_sum = min_sum;
+    // Shrink the widest column first so narrow columns (e.g. a short "Day"
+    // column) stay intact and only the overflowing column is trimmed.
     while (sum > max_sum) {
-        var shrunk = false;
-        var c: usize = 0;
-        while (c < ncol and sum > max_sum) : (c += 1) {
-            if (widths[c] > 3) {
-                widths[c] -= 1;
-                sum -= 1;
-                shrunk = true;
+        var widest: usize = 0;
+        var wv: usize = 3;
+        for (0..ncol) |c| {
+            if (widths[c] > wv) {
+                wv = widths[c];
+                widest = c;
             }
         }
-        if (!shrunk) break;
+        if (wv <= 3) break;
+        widths[widest] -= 1;
+        sum -= 1;
     }
 
     const wslice = widths[0..ncol];
     var buf: [16384]u8 = undefined;
-    var cellbuf: [md_tbl_cell_max + 8]u8 = undefined;
 
     // Top rule ┌┬┐
     try l.push(markdown.tableBorderLine(&buf, wslice, ansi.tl, "\xe2\x94\xac", ansi.tr));
 
-    // Header row.
+    // Header row (bold), wrapped to its column widths.
     {
-        var ln: std.ArrayListUnmanaged(u8) = .empty;
-        defer ln.deinit(a);
-        try ln.appendSlice(a, ansi.c_hdm);
-        try ln.appendSlice(a, "  ");
-        try ln.appendSlice(a, ansi.vl);
-        try ln.appendSlice(a, ansi.reset);
-        for (0..ncol) |c| {
-            const src = if (c < hcols) header[c] else "";
-            const cell = try cellLabel(a, &cellbuf, src, widths[c]);
-            // BO C_AST " %-*s " RS C_HDM "│" RS
-            try ln.appendSlice(a, ansi.bold);
-            try ln.appendSlice(a, ansi.c_ast);
-            try ln.append(a, ' ');
-            try ln.appendSlice(a, cell);
-            const pad = if (widths[c] > cell.len) widths[c] - cell.len else 0;
-            try ln.appendNTimes(a, ' ', pad);
-            try ln.append(a, ' ');
-            try ln.appendSlice(a, ansi.reset);
-            try ln.appendSlice(a, ansi.c_hdm);
-            try ln.appendSlice(a, ansi.vl);
-            try ln.appendSlice(a, ansi.reset);
-        }
-        try l.pushwLink(ln.items);
+        var hsrc: [md_tbl_max_cols][]const u8 = .{""} ** md_tbl_max_cols;
+        for (0..ncol) |c| hsrc[c] = if (c < hcols) header[c] else "";
+        try emitWrappedRow(l, wslice, ncol, hsrc[0..ncol], true);
     }
 
     // Header separator ├┼┤
     try l.push(markdown.tableBorderLine(&buf, wslice, "\xe2\x94\x9c", "\xe2\x94\xbc", "\xe2\x94\xa4"));
 
-    // Body rows.
+    // Body rows, each wrapped to its column widths.
     for (rows, 0..) |row, r| {
-        var ln: std.ArrayListUnmanaged(u8) = .empty;
-        defer ln.deinit(a);
-        try ln.appendSlice(a, ansi.c_hdm);
-        try ln.appendSlice(a, "  ");
-        try ln.appendSlice(a, ansi.vl);
-        try ln.appendSlice(a, ansi.reset);
-        for (0..ncol) |c| {
-            const src = row[c];
-            const cell = try cellLabel(a, &cellbuf, src, widths[c]);
-            const vis = cell.len;
-            const pad = if (widths[c] > vis) widths[c] - vis else 0;
-            // C_AST " " then (OSC-8 link wrapped cell | cell) then pad " " RS C_HDM │ RS
-            try ln.appendSlice(a, ansi.c_ast);
-            try ln.append(a, ' ');
-            const target = try cellTarget(a, src);
-            defer a.free(target);
-            if (target.len > 0) {
-                try ln.appendSlice(a, "\x1b]8;;");
-                try ln.appendSlice(a, target);
-                try ln.append(a, '\x07');
-                try ln.appendSlice(a, cell);
-                try ln.appendSlice(a, "\x1b]8;;\x07");
-            } else {
-                try ln.appendSlice(a, cell);
-            }
-            try ln.appendNTimes(a, ' ', pad);
-            try ln.append(a, ' ');
-            try ln.appendSlice(a, ansi.reset);
-            try ln.appendSlice(a, ansi.c_hdm);
-            try ln.appendSlice(a, ansi.vl);
-            try ln.appendSlice(a, ansi.reset);
-        }
-        try l.pushwLink(ln.items);
+        var bsrc: [md_tbl_max_cols][]const u8 = .{""} ** md_tbl_max_cols;
+        for (0..ncol) |c| bsrc[c] = row[c];
+        try emitWrappedRow(l, wslice, ncol, bsrc[0..ncol], false);
         if (r + 1 < rows.len) {
             try l.push(markdown.tableBorderLine(&buf, wslice, "\xe2\x94\x9c", "\xe2\x94\xbc", "\xe2\x94\xa4"));
         }
@@ -1600,17 +1685,147 @@ test "pushw keeps a short line as a single slot" {
     try std.testing.expectEqual(@as(usize, 1), l.out.items.len);
 }
 
-test "fitCell truncates on a UTF-8 boundary (no orphan bytes)" {
-    var dst: [64]u8 = undefined;
-    // "09:58 — x" — the cut at width-1 lands inside the 3-byte em dash. The
-    // result must be valid UTF-8: the partial char is dropped, not sliced.
-    const out = fitCell(&dst, "09:58 \xe2\x80\x94 x", 8);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(out));
-    try std.testing.expectEqualStrings("09:58 .", out);
+test "narrow table trims the widest column, not the small ones" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const md =
+        "| Day | landed | Anomaly window (CEST) |\n" ++
+        "|-----|--------|------------------------|\n" ++
+        "| Jul 7 | 16:31:00 | Guyon window is 16:31 to 16:47 exact match to the second |\n";
+    const items = [_]transcript.Item{
+        .{ .type = .assistant, .text = @constCast(md), .label = null, .is_err = false },
+    };
+    // 80 cols forces a shrink; the small "Day" column must survive intact
+    // rather than being chopped to "Jul." by an even round-robin shrink.
+    const lines = try renderItems(aa, &items, 80);
+    var saw_day = false;
+    for (lines) |ln| {
+        const plain = try plainLine(aa, ln);
+        if (std.mem.indexOf(u8, plain, "Jul 7") != null) saw_day = true;
+    }
+    try std.testing.expect(saw_day);
 }
 
-test "fitCell keeps a multibyte char that fits whole" {
-    var dst: [64]u8 = undefined;
-    const out = fitCell(&dst, "a\xe2\x80\xa2", 10); // "a•" fits
-    try std.testing.expectEqualStrings("a\xe2\x80\xa2", out);
+test "dash-heavy table fits and aligns by display width" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    // Cells full of en/em dashes (3 bytes, 1 column). Byte-width math would read
+    // this as far wider than it displays and truncate it; display-width must not.
+    const md =
+        "| Day | When |\n" ++
+        "|-----|------|\n" ++
+        "| Jul 7 | 16:31\xe2\x80\x9316:47 \xe2\x80\x94 exact match to the second |\n";
+    const items = [_]transcript.Item{
+        .{ .type = .assistant, .text = @constCast(md), .label = null, .is_err = false },
+    };
+    const lines = try renderItems(aa, &items, 120);
+    var w: ?usize = null;
+    var saw_full = false;
+    for (lines) |ln| {
+        if (std.mem.eql(u8, ln, ansi.wrap_placeholder)) continue;
+        const plain = try plainLine(aa, ln);
+        if (plain.len == 0) continue; // skip the leading blank separator line
+        if (std.mem.indexOf(u8, plain, "to the second") != null) saw_full = true;
+        // Every emitted table line shares one display width → borders align.
+        const lw = dispCols(plain);
+        if (w) |ww| try std.testing.expectEqual(ww, lw) else w = lw;
+    }
+    try std.testing.expect(saw_full); // content not truncated when it fits
+}
+
+test "wrapCell breaks at word boundaries" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const segs = try wrapCell(arena.allocator(), "alpha beta gamma", 11);
+    try std.testing.expectEqual(@as(usize, 2), segs.len);
+    try std.testing.expectEqualStrings("alpha beta", segs[0]);
+    try std.testing.expectEqualStrings("gamma", segs[1]);
+}
+
+test "wrapCell hard-breaks a word longer than the column" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const segs = try wrapCell(arena.allocator(), "abcdefghij", 4);
+    try std.testing.expectEqual(@as(usize, 3), segs.len);
+    try std.testing.expectEqualStrings("abcd", segs[0]);
+    try std.testing.expectEqualStrings("efgh", segs[1]);
+    try std.testing.expectEqualStrings("ij", segs[2]);
+}
+
+test "wrapCell measures width in display columns, not bytes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // "a–b" (en dash) is 3 display columns; splitting at 2 keeps "a–" (2 cols)
+    // whole, never a sliced multibyte.
+    const segs = try wrapCell(arena.allocator(), "a\xe2\x80\x93b", 2);
+    try std.testing.expectEqual(@as(usize, 2), segs.len);
+    try std.testing.expectEqualStrings("a\xe2\x80\x93", segs[0]);
+    try std.testing.expectEqualStrings("b", segs[1]);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(segs[0]));
+}
+
+test "wrapCell returns one segment when the text fits" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const segs = try wrapCell(arena.allocator(), "hello", 10);
+    try std.testing.expectEqual(@as(usize, 1), segs.len);
+    try std.testing.expectEqualStrings("hello", segs[0]);
+}
+
+test "table wraps an over-long cell across aligned lines" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const md =
+        "| A | Notes |\n" ++
+        "|---|-------|\n" ++
+        "| 1 | one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen |\n";
+    const items = [_]transcript.Item{
+        .{ .type = .assistant, .text = @constCast(md), .label = null, .is_err = false },
+    };
+    // 72 is the minimum width at which a table renders; the long Notes column
+    // must then wrap rather than truncate.
+    const lines = try renderItems(aa, &items, 72);
+    var w: ?usize = null;
+    var saw_first = false;
+    var saw_last = false;
+    var bar_lines: usize = 0;
+    for (lines) |ln| {
+        if (std.mem.eql(u8, ln, ansi.wrap_placeholder)) continue;
+        const plain = try plainLine(aa, ln);
+        if (plain.len == 0) continue;
+        if (std.mem.indexOf(u8, plain, "one") != null) saw_first = true;
+        if (std.mem.indexOf(u8, plain, "eighteen") != null) saw_last = true;
+        if (std.mem.indexOf(u8, plain, "│") != null) bar_lines += 1;
+        // Every emitted table line has equal display width → borders align.
+        const lw = dispCols(plain);
+        if (w) |ww| try std.testing.expectEqual(ww, lw) else w = lw;
+    }
+    try std.testing.expect(saw_first); // nothing truncated: first word present
+    try std.testing.expect(saw_last); //   and the last word survives too
+    // header is 1 bar-line; an unwrapped row would total 2. More means the row
+    // itself spanned multiple lines.
+    try std.testing.expect(bar_lines > 2);
+}
+
+test "table with no overflow renders one line per row" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const md = "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+    const items = [_]transcript.Item{
+        .{ .type = .assistant, .text = @constCast(md), .label = null, .is_err = false },
+    };
+    const lines = try renderItems(aa, &items, 100);
+    var box_lines: usize = 0;
+    for (lines) |ln| {
+        if (std.mem.eql(u8, ln, ansi.wrap_placeholder)) continue;
+        const plain = try plainLine(aa, ln);
+        if (std.mem.indexOf(u8, plain, "│") != null) box_lines += 1;
+    }
+    // top ┌, header, ├ sep, row1, ├ sep, row2, bottom └ — but only lines with │
+    // are header + 2 body rows = 3 (rules use ┬┼┴ without │).
+    try std.testing.expectEqual(@as(usize, 3), box_lines);
 }

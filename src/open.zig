@@ -6,7 +6,7 @@
 //! pager — no mouse tracking, no scroll loop, no clickable-URL rewriting — so
 //! the terminal's native scrollback/selection are left untouched.
 //!
-//!   newestJsonl / findTranscript   — locate the newest *.jsonl transcript
+//!   findTranscript                 — locate the session transcript by session id
 //!   maybeRenderTranscript          — render to plain text + export render file
 //!   printSummary                   — write the rendered summary to /dev/tty
 //!   spawnEditor / terminalEditorPath / genericEditorPath — launch the editor
@@ -17,87 +17,34 @@ const term = @import("term.zig");
 const log = @import("log.zig");
 
 // libc functions not surfaced by std in Zig 0.16.
-extern "c" fn ttyname(fd: c_int) ?[*:0]const u8;
 extern "c" fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) c_int;
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 extern "c" fn fork() std.c.pid_t;
 
 // ── Transcript finding (pure, no process spawns) ────────────────────────────
 
-/// Return the path of the most-recently-modified `*.jsonl` file directly in
-/// `dir`, or null if there is none / the dir can't be opened.
-/// Caller owns the returned slice.
-pub fn newestJsonl(alloc: std.mem.Allocator, dir: []const u8) !?[]u8 {
-    var threaded = std.Io.Threaded.init(alloc, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    var d = std.Io.Dir.cwd().openDir(io, dir, .{ .iterate = true }) catch return null;
-    defer d.close(io);
-
-    var best_path: ?[]u8 = null;
-    errdefer if (best_path) |p| alloc.free(p);
-    var best_mtime: i96 = std.math.minInt(i96);
-
-    var it = d.iterate();
-    while (it.next(io) catch null) |entry| {
-        if (!std.mem.endsWith(u8, entry.name, ".jsonl")) continue;
-        const st = d.statFile(io, entry.name, .{}) catch continue;
-        const m = st.mtime.nanoseconds;
-        if (best_path == null or m > best_mtime) {
-            const full = try std.fs.path.join(alloc, &.{ dir, entry.name });
-            if (best_path) |p| alloc.free(p);
-            best_path = full;
-            best_mtime = m;
-        }
-    }
-    return best_path;
-}
-
-/// Locate the newest `.jsonl` transcript for the current session/cwd under
-/// `<home>/.claude/projects/...`. Caller owns the returned slice (or null).
+/// Locate the current session's transcript under `<home>/.claude/projects/...`,
+/// or null when it can't be identified. The session is pinned by whichever
+/// identifier this session type exposes — the session UUID, or the bridge id
+/// mapped to a transcript by the SessionStart hook — never by cwd/newest-jsonl
+/// guessing. When neither pins it, the honest answer is "no transcript" rather
+/// than another session's conversation. Caller owns the slice.
 pub fn findTranscript(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
-    // Strategy 1: tty-keyed file written by the SessionStart hook. When the
-    // pointer exists but its target hasn't been created yet (fresh session),
-    // stop here: falling through to the newest-jsonl strategies would show
-    // another session's conversation.
-    if (ttyKeyedTranscript(alloc)) |t| {
-        if (t) |path| return path;
-    } else |err| switch (err) {
-        error.FreshSession => return null,
-        else => {},
-    }
-
-    // Strategy 2: PWD-derived project directory.
-    if (getEnv("PWD")) |pwd| {
-        if (pwd.len > 0) {
-            const key = try projectKey(alloc, pwd);
-            defer alloc.free(key);
-            const project_dir = try std.fmt.allocPrint(alloc, "{s}/.claude/projects/{s}", .{ home, key });
-            defer alloc.free(project_dir);
-            if (try newestJsonl(alloc, project_dir)) |path| return path;
-        }
-    }
-
-    // Strategy 3: globally most-recent across all project dirs.
-    return globalNewest(alloc, home);
+    if (try sessionIdTranscript(alloc, home)) |path| return path;
+    return bridgePointerTranscript(alloc);
 }
 
-/// Derive the ~/.claude/projects/<key> name from `pwd` the way Claude does:
-/// every non-alphanumeric character becomes '-' (".claude" -> "-claude").
-fn projectKey(alloc: std.mem.Allocator, pwd: []const u8) ![]u8 {
-    const out = try alloc.alloc(u8, pwd.len);
-    for (pwd, 0..) |c, i| out[i] = if (std.ascii.isAlphanumeric(c)) c else '-';
-    return out;
-}
+/// Bridge/harness sessions (e.g. the desktop app) expose only
+/// CLAUDE_CODE_BRIDGE_SESSION_ID to the editor, not the session UUID. The
+/// SessionStart hook records the transcript path in
+/// /tmp/claude-transcript-bridge-<id>; read it and confirm the target exists
+/// (a just-started session's .jsonl may not be born yet).
+fn bridgePointerTranscript(alloc: std.mem.Allocator) !?[]u8 {
+    const bid = getEnv("CLAUDE_CODE_BRIDGE_SESSION_ID") orelse return null;
+    if (bid.len == 0) return null;
+    for (bid) |c| if (c == '/' or c == 0) return null;
 
-/// Strategy 1: read /tmp/claude-transcript-<tty> (first line is a path).
-fn ttyKeyedTranscript(alloc: std.mem.Allocator) !?[]u8 {
-    const tty = ttyname(std.posix.STDIN_FILENO) orelse return null;
-    var key = std.mem.span(tty);
-    if (std.mem.startsWith(u8, key, "/dev/")) key = key[5..];
-
-    const path = try std.fmt.allocPrint(alloc, "/tmp/claude-transcript-{s}", .{key});
+    const path = try std.fmt.allocPrint(alloc, "/tmp/claude-transcript-bridge-{s}", .{bid});
     defer alloc.free(path);
 
     var threaded = std.Io.Threaded.init(alloc, .{});
@@ -112,25 +59,25 @@ fn ttyKeyedTranscript(alloc: std.mem.Allocator) !?[]u8 {
     line = std.mem.trimEnd(u8, line, " \r\t");
     if (line.len == 0) return null;
 
-    return (try resolvePointerTarget(alloc, line)) orelse error.FreshSession;
+    var nul: [4096]u8 = undefined;
+    if (line.len + 1 > nul.len) return null;
+    @memcpy(nul[0..line.len], line);
+    nul[line.len] = 0;
+    if (std.c.access(@ptrCast(&nul), 4) != 0) return null; // R_OK
+    return try alloc.dupe(u8, line);
 }
 
-/// Resolve a transcript path written by the SessionStart hook. Claude creates
-/// the session .jsonl lazily (only after the first user message), so a fresh
-/// session's pointer can name a file that doesn't exist yet.
-fn resolvePointerTarget(alloc: std.mem.Allocator, line: []const u8) !?[]u8 {
-    var nul_buf: [4096]u8 = undefined;
-    if (line.len == 0 or line.len + 1 > nul_buf.len) return null;
-    @memcpy(nul_buf[0..line.len], line);
-    nul_buf[line.len] = 0;
-    if (std.c.access(@ptrCast(&nul_buf), 4) == 0) return try alloc.dupe(u8, line); // R_OK
-    // Target not born yet: fresh session, nothing to show. Never guess a
-    // sibling session's transcript — that displays the wrong conversation.
-    return null;
-}
+/// Locate the transcript for the session named by CLAUDE_CODE_SESSION_ID.
+/// Claude Code names each transcript <session-id>.jsonl under some project dir;
+/// the session's cwd may differ from the current one, so every project dir is
+/// searched. Returns null when the variable is unset or no matching file exists.
+fn sessionIdTranscript(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
+    const sid = getEnv("CLAUDE_CODE_SESSION_ID") orelse return null;
+    if (sid.len == 0) return null;
+    // A session id is a bare UUID; reject anything with path separators so it
+    // can never escape the projects directory.
+    for (sid) |c| if (c == '/' or c == 0) return null;
 
-/// Strategy 3: scan every project dir, return the single newest jsonl.
-fn globalNewest(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
     const projects_dir = try std.fmt.allocPrint(alloc, "{s}/.claude/projects", .{home});
     defer alloc.free(projects_dir);
 
@@ -141,27 +88,19 @@ fn globalNewest(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
     var pd = std.Io.Dir.cwd().openDir(io, projects_dir, .{ .iterate = true }) catch return null;
     defer pd.close(io);
 
-    var best_path: ?[]u8 = null;
-    errdefer if (best_path) |p| alloc.free(p);
-    var best_mtime: i96 = std.math.minInt(i96);
-
     var it = pd.iterate();
     while (it.next(io) catch null) |entry| {
         if (entry.name.len == 0 or entry.name[0] == '.') continue;
-        const subdir = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ projects_dir, entry.name });
-        defer alloc.free(subdir);
-        const candidate = (try newestJsonl(alloc, subdir)) orelse continue;
-        defer alloc.free(candidate);
-        const st = std.Io.Dir.cwd().statFile(io, candidate, .{}) catch continue;
-        const m = st.mtime.nanoseconds;
-        if (best_path == null or m > best_mtime) {
-            if (best_path) |p| alloc.free(p);
-            best_path = try alloc.dupe(u8, candidate);
-            best_mtime = m;
+        const candidate = try std.fmt.allocPrint(alloc, "{s}/{s}/{s}.jsonl", .{ projects_dir, entry.name, sid });
+        if (std.Io.Dir.cwd().statFile(io, candidate, .{})) |_| {
+            return candidate;
+        } else |_| {
+            alloc.free(candidate);
         }
     }
-    return best_path;
+    return null;
 }
+
 
 // ── Plain-text render for inline-context editors ────────────────────────────
 
@@ -425,57 +364,7 @@ fn getEnv(name: []const u8) ?[]const u8 {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-test "projectKey maps every non-alphanumeric char to '-' like Claude does" {
-    const a = std.testing.allocator;
-    // Claude derives ~/.claude/projects/<key> by replacing [^a-zA-Z0-9] with '-':
-    // "/Users/p/.claude" -> "-Users-p--claude", "github.com" -> "github-com".
-    const cases = [_][2][]const u8{
-        .{ "/Users/pavel/Notes", "-Users-pavel-Notes" },
-        .{ "/Users/pavel/.claude", "-Users-pavel--claude" },
-        .{
-            "/Users/pavel/Developer/src/github.com/FindHotel/content-pipeline",
-            "-Users-pavel-Developer-src-github-com-FindHotel-content-pipeline",
-        },
-        .{ "/tmp/repo_name", "-tmp-repo-name" },
-    };
-    for (cases) |c| {
-        const got = try projectKey(a, c[0]);
-        defer a.free(got);
-        try std.testing.expectEqualStrings(c[1], got);
-    }
-}
-
-test "newestJsonl picks the most recently modified" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    try tmp.dir.writeFile(io, .{ .sub_path = "a.jsonl", .data = "a\n" });
-    // Coarse-timestamp filesystems need a gap to distinguish mtimes.
-    sleepMs(1_100);
-    try tmp.dir.writeFile(io, .{ .sub_path = "b.jsonl", .data = "b\n" });
-    // A non-jsonl file must be ignored even though it is newest.
-    try tmp.dir.writeFile(io, .{ .sub_path = "c.txt", .data = "c\n" });
-
-    // tmpDir lives at .zig-cache/tmp/<sub_path> relative to cwd.
-    const dir_path = try std.fmt.allocPrint(
-        std.testing.allocator,
-        ".zig-cache/tmp/{s}",
-        .{tmp.sub_path},
-    );
-    defer std.testing.allocator.free(dir_path);
-
-    const got = try newestJsonl(std.testing.allocator, dir_path);
-    defer if (got) |g| std.testing.allocator.free(g);
-
-    try std.testing.expect(got != null);
-    try std.testing.expect(std.mem.endsWith(u8, got.?, "b.jsonl"));
-}
-
-test "resolvePointerTarget returns the path itself when readable" {
+test "sessionIdTranscript resolves the exact session, not the newest sibling" {
     const a = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -483,39 +372,79 @@ test "resolvePointerTarget returns the path itself when readable" {
     var threaded = std.Io.Threaded.init(a, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    try tmp.dir.writeFile(io, .{ .sub_path = "live.jsonl", .data = "x\n" });
 
-    const target = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/live.jsonl", .{tmp.sub_path});
+    // Two sessions sharing one project dir: our session's transcript, plus a
+    // newer sibling that the newest-jsonl heuristic would wrongly prefer.
+    try tmp.dir.createDirPath(io, ".claude/projects/proj");
+    try tmp.dir.writeFile(io, .{ .sub_path = ".claude/projects/proj/mine.jsonl", .data = "m\n" });
+    sleepMs(1_100);
+    try tmp.dir.writeFile(io, .{ .sub_path = ".claude/projects/proj/newer-sibling.jsonl", .data = "s\n" });
+
+    const home = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer a.free(home);
+
+    _ = setenv("CLAUDE_CODE_SESSION_ID", "mine", 1);
+    defer _ = setenv("CLAUDE_CODE_SESSION_ID", "", 1);
+
+    const got = try sessionIdTranscript(a, home);
+    defer if (got) |g| a.free(g);
+    try std.testing.expect(got != null);
+    try std.testing.expect(std.mem.endsWith(u8, got.?, "proj/mine.jsonl"));
+}
+
+test "sessionIdTranscript returns null when the id names no file" {
+    _ = setenv("CLAUDE_CODE_SESSION_ID", "no-such-session", 1);
+    defer _ = setenv("CLAUDE_CODE_SESSION_ID", "", 1);
+    const got = try sessionIdTranscript(std.testing.allocator, "/nonexistent/home/xyz");
+    try std.testing.expect(got == null);
+}
+
+test "bridgePointerTranscript resolves via the hook-written pointer" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var threaded = std.Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // A real transcript target, plus the pointer the SessionStart hook writes.
+    try tmp.dir.writeFile(io, .{ .sub_path = "t.jsonl", .data = "x\n" });
+    const target = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/t.jsonl", .{tmp.sub_path});
     defer a.free(target);
 
-    const got = try resolvePointerTarget(a, target);
+    const bid = "claude-pager-open-zig-unit-test";
+    const ptr = "/tmp/claude-transcript-bridge-" ++ "claude-pager-open-zig-unit-test";
+    const line = try std.fmt.allocPrint(a, "{s}\n", .{target});
+    defer a.free(line);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = ptr, .data = line });
+    defer std.Io.Dir.cwd().deleteFile(io, ptr) catch {};
+
+    _ = setenv("CLAUDE_CODE_BRIDGE_SESSION_ID", bid, 1);
+    defer _ = setenv("CLAUDE_CODE_BRIDGE_SESSION_ID", "", 1);
+
+    const got = try bridgePointerTranscript(a);
     defer if (got) |g| a.free(g);
     try std.testing.expect(got != null);
     try std.testing.expectEqualStrings(target, got.?);
 }
 
-test "resolvePointerTarget returns null when target is missing, even with sibling jsonls" {
-    // A pointer whose target doesn't exist yet means a fresh session with no
-    // conversation. Guessing a sibling session's transcript here showed the
-    // wrong conversation; the only correct answer is "no transcript yet".
+test "bridgePointerTranscript returns null when the pointer target is gone" {
+    // A pointer naming a not-yet-born transcript must not resolve (fresh session).
     const a = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
     var threaded = std.Io.Threaded.init(a, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    try tmp.dir.writeFile(io, .{ .sub_path = "previous.jsonl", .data = "x\n" });
 
-    const target = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/not-born-yet.jsonl", .{tmp.sub_path});
-    defer a.free(target);
+    const bid = "claude-pager-open-zig-missing-test";
+    const ptr = "/tmp/claude-transcript-bridge-" ++ "claude-pager-open-zig-missing-test";
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = ptr, .data = "/nonexistent/xyz.jsonl\n" });
+    defer std.Io.Dir.cwd().deleteFile(io, ptr) catch {};
 
-    const got = try resolvePointerTarget(a, target);
+    _ = setenv("CLAUDE_CODE_BRIDGE_SESSION_ID", bid, 1);
+    defer _ = setenv("CLAUDE_CODE_BRIDGE_SESSION_ID", "", 1);
+
+    const got = try bridgePointerTranscript(a);
     defer if (got) |g| a.free(g);
-    try std.testing.expect(got == null);
-}
-
-test "newestJsonl returns null for a missing dir" {
-    const got = try newestJsonl(std.testing.allocator, "/nonexistent/dir/xyz-claude-pager");
     try std.testing.expect(got == null);
 }

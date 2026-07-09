@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
-# SessionStart hook: saves transcript_path keyed by Claude's terminal tty.
-# This lets the editor shim find the exact transcript for any session,
-# even when multiple Claude sessions run from the same directory.
+# SessionStart hook: records the session's transcript_path so the prompt editor
+# can find the exact transcript for the session it was invoked from, even when
+# many sessions share a working directory.
+#
+# Two keys are written because different session types expose different
+# identifiers to the editor subprocess:
+#   - bridge id: desktop-app / harness sessions give the editor only
+#     CLAUDE_CODE_BRIDGE_SESSION_ID (no session UUID, no usable tty).
+#   - tty:       plain terminal sessions are identified by their controlling tty.
+# Both map to the same transcript_path; the editor reads whichever it has.
 #
 # Install: add to Claude Code settings.json under hooks.SessionStart
 set -euo pipefail
@@ -9,6 +16,12 @@ set -euo pipefail
 input=$(cat)
 transcript=$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null || true)
 [[ -z "$transcript" ]] && exit 0
+
+# Bridge/harness sessions: key by the bridge id (present even when there is no
+# real tty, e.g. the desktop app).
+if [[ -n "${CLAUDE_CODE_BRIDGE_SESSION_ID:-}" ]]; then
+    printf '%s\n' "$transcript" > "/tmp/claude-transcript-bridge-${CLAUDE_CODE_BRIDGE_SESSION_ID}"
+fi
 
 # Walk up the process tree to find the Claude process and get its tty
 pid=$PPID

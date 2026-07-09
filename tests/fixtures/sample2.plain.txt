@@ -12,11 +12,11 @@ Here is a comparison table of encoding widths:
   ├───────────┼─────────┼───────────────┼──────────────────────┤
   │ A         │ U+0041  │ 1             │ ASCII letter         │
   ├───────────┼─────────┼───────────────┼──────────────────────┤
-  │ 世       │ U+4E16  │ 2             │ CJK ideograph (wide) │
+  │ 世        │ U+4E16  │ 2             │ CJK ideograph (wide) │
   ├───────────┼─────────┼───────────────┼──────────────────────┤
-  │ 界       │ U+754C  │ 2             │ CJK ideograph (wide) │
+  │ 界        │ U+754C  │ 2             │ CJK ideograph (wide) │
   ├───────────┼─────────┼───────────────┼──────────────────────┤
-  │ é        │ U+00E9  │ 1             │ Latin extended       │
+  │ é         │ U+00E9  │ 1             │ Latin extended       │
   └───────────┴─────────┴───────────────┴──────────────────────┘
 
 For reference see https://example.com/unicode-widths

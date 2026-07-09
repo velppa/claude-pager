@@ -18,22 +18,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EL="$SCRIPT_DIR/claude-prompt.el"
 
 # --- resolve transcript .jsonl ---
+# Identify the exact session (many may share a working directory), by whichever
+# identifier this session type gives the editor. When neither pins the session,
+# show no transcript rather than guess another session's conversation.
 transcript=""
-tty_dev=$(ps -o tty= -p $$ 2>/dev/null | tr -d ' ' || true)
-if [[ -n "$tty_dev" && "$tty_dev" != "?"* ]]; then
-  ptr="/tmp/claude-transcript-${tty_dev}"
+# Terminal/agent contexts expose the session UUID, which names the transcript.
+if [[ -n "${CLAUDE_CODE_SESSION_ID:-}" ]]; then
+  transcript=$(ls "$HOME/.claude/projects"/*/"${CLAUDE_CODE_SESSION_ID}.jsonl" 2>/dev/null | head -1 || true)
+fi
+# Bridge/harness contexts expose only the bridge id; the SessionStart hook
+# recorded the transcript path under it.
+if [[ -z "$transcript" && -n "${CLAUDE_CODE_BRIDGE_SESSION_ID:-}" ]]; then
+  ptr="/tmp/claude-transcript-bridge-${CLAUDE_CODE_BRIDGE_SESSION_ID}"
   [[ -r "$ptr" ]] && transcript=$(<"$ptr")
 fi
-if [[ -n "$transcript" && ! -r "$transcript" ]]; then
-  # Pointer exists but Claude hasn't created the session .jsonl yet: fresh
-  # session, nothing to show. Never guess another session's transcript.
-  transcript=""
-elif [[ -z "$transcript" ]]; then
-  # No pointer at all (hook didn't run): newest .jsonl for this project.
-  # Claude's project key: every non-alphanumeric char becomes '-'.
-  key=$(printf '%s' "$PWD" | LC_ALL=C tr -c '[:alnum:]' '-')
-  transcript=$(ls -t "$HOME/.claude/projects/${key}"/*.jsonl 2>/dev/null | head -1 || true)
-fi
+[[ -n "$transcript" && ! -r "$transcript" ]] && transcript=""
 
 # --- load lib + arm the pending transcript (non-blocking) ---
 # If claude-pager pre-rendered the transcript to plain text, prefer that
