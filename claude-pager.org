@@ -1,0 +1,89 @@
+#+title: claude-pager
+
+Fast Zig transcript pager for Claude Code, with Emacs prompt-editing
+integration.
+
+* Development
+** Build & test
+- Build: ~zig build~ (default ~ReleaseSmall~). Debug: ~zig build -Doptimize=Debug~.
+- Test: ~zig build test~ (tests always run with full runtime safety).
+- Toolchain: Zig 0.16 (via mise). APIs assume 0.16 — note std churn (e.g. no
+  `std.process.Child.run`, no `std.Thread.sleep`, `getenv` scans `std.c.environ`).
+- Binaries land in ~zig-out/bin/~; ~bin/~, ~zig-out/~, ~.zig-cache/~ are gitignored.
+
+** Layout
+- ~src/main_open.zig~ — entrypoint for ~claude-pager-open~ (the ~$EDITOR~ shim).
+- `src/` — Zig sources: `render*.zig`, `ansi.zig` (theme-agnostic 16-color
+  palette), `transcript.zig`, `settings.zig`, `editor.zig`, `open.zig`.
+- `tests/fixtures/` — sample transcripts + plain-text goldens, wired in via
+  `addAnonymousImport` in `build.zig`.
+- ~emacs/~, ~shim/~ — Emacs integration + session-transcript hooks.
+
+** Versioning
+
+This project uses *v0.N.9OCTAL* versioning:
+
+- ~N~ = total commit count on ~HEAD~ (~git rev-list --count HEAD~).
+- `9OCTAL` = the 6-char short commit SHA re-encoded hex→octal, prefixed with
+  `9`. The `9` is self-identifying (octal digits are only 0-7) and the value
+  decodes back to the short SHA: `echo "obase=16; ibase=8; <octal>" | bc`.
+
+Computed at build time in ~build.zig~ (~computeVersion~) and exposed as the
+~build_options.version~ constant. Print it with ~claude-pager --version~.
+Outside a git checkout it falls back to ~v0.0.9dev~.
+
+** Workflow for this project
+
+Unlike the user's other repos: *DO commit, and DO build a new version.*
+
+- After a change: run ~zig build~ + ~zig build test~, then commit.
+- Because the version is derived from git state, committing and rebuilding
+  automatically bumps the version (new `N`, new SHA → new octal). "Build a new
+  version" = commit, then `zig build`.
+* Transcript discovery mechanism
+
+How the editor shim locates the current session's transcript
+(~<uuid>.jsonl~ under =~/.claude/projects/<project>/=). Resolution is
+exact — never cwd/newest-jsonl guessing — so an unidentified session
+yields "no transcript" rather than another session's conversation.
+
+Two parallel implementations, keep them in sync:
+- Zig: ~findTranscript~ in ~src/open.zig~ (feeds the static summary and
+  the plain-text render exported via ~CLAUDE_PAGER_RENDER_FILE~).
+- Shell: ~emacs/claude-emacs-prompt~ (fallback when no render file; the
+  transcript path is handed to Emacs for its own rendering).
+
+** Session registry
+
+Claude Code maintains =~/.claude/sessions/<pid>.json= — one file per
+running CLI process, keyed by its pid. Relevant fields:
+
+- ~sessionId~ — UUID naming the transcript file.
+- ~bridgeSessionId~ — claude.ai bridge id (~session_...~); *becomes
+  null after a relogin*, and env copies of it go stale.
+- ~startedAt~ — session start, epoch ms; trails the process start by
+  CLI boot time (~1s). ~procStart~ is the same instant as an asctime
+  string, but *in UTC* — do not compare it to local-time ~ps lstart~.
+
+** Resolution chain
+
+Each step falls through to the next on failure:
+
+1. ~CLAUDE_CODE_SESSION_ID~ env — the UUID directly. Not set in the
+   editor's environment in all contexts.
+2. ~CLAUDE_CODE_BRIDGE_SESSION_ID~ env → scan registry for the entry
+   with matching ~bridgeSessionId~ → its ~sessionId~. Breaks after a
+   relogin (registry holds null).
+3. Ancestor-pid walk — the editor is always a descendant of the claude
+   process, so walk parent pids (≤12 levels; ~proc_pidinfo~ in Zig,
+   ~ps -o ppid=~ in shell) and look for =sessions/<pid>.json=.
+   Needs no environment cooperation at all.
+
+Pid-reuse guard for step 3: the entry's ~startedAt/1000~ must sit
+within [-2s, +60s] of the live process's start time
+(~pbi_start_tvsec~ / ~ps -o lstart=~ parsed to epoch); otherwise the
+entry is a stale leftover from a dead session and is rejected.
+
+Finally the UUID is resolved to a path by probing
+=~/.claude/projects/*/<uuid>.jsonl= (the session's cwd may differ from
+the current one, so every project dir is checked).
