@@ -9,7 +9,7 @@ integration.
 - Test: ~zig build test~ (tests always run with full runtime safety).
 - Toolchain: Zig 0.16 (via mise). APIs assume 0.16 — note std churn (e.g. no
   `std.process.Child.run`, no `std.Thread.sleep`, `getenv` scans `std.c.environ`).
-- Binaries land in ~zig-out/bin/~; ~bin/~, ~zig-out/~, ~.zig-cache/~ are gitignored.
+- Binaries land in ~bin/~; ~bin/~, ~zig-out/~, ~.zig-cache/~ are gitignored.
 
 ** Layout
 - ~src/main_open.zig~ — entrypoint for ~claude-pager-open~ (the ~$EDITOR~ shim).
@@ -41,20 +41,18 @@ Unlike the user's other repos: *DO commit, and DO build a new version.*
   automatically bumps the version (new `N`, new SHA → new octal). "Build a new
   version" = commit, then `zig build`.
 * Transcript discovery mechanism
-
 How the editor shim locates the current session's transcript
 (~<uuid>.jsonl~ under =~/.claude/projects/<project>/=). Resolution is
 exact — never cwd/newest-jsonl guessing — so an unidentified session
 yields "no transcript" rather than another session's conversation.
 
 Two parallel implementations, keep them in sync:
-- Zig: ~findTranscript~ in ~src/open.zig~ (feeds the static summary and
-  the plain-text render exported via ~CLAUDE_PAGER_RENDER_FILE~).
+- Zig: (deadgrep "findTranscript") - feeds the static summary and the
+  plain-text render exported via ~CLAUDE_PAGER_RENDER_FILE~.
 - Shell: ~emacs/claude-emacs-prompt~ (fallback when no render file; the
   transcript path is handed to Emacs for its own rendering).
 
 ** Session registry
-
 Claude Code maintains =~/.claude/sessions/<pid>.json= — one file per
 running CLI process, keyed by its pid. Relevant fields:
 
@@ -66,7 +64,6 @@ running CLI process, keyed by its pid. Relevant fields:
   string, but *in UTC* — do not compare it to local-time ~ps lstart~.
 
 ** Resolution chain
-
 Each step falls through to the next on failure:
 
 1. ~CLAUDE_CODE_SESSION_ID~ env — the UUID directly. Not set in the

@@ -26,6 +26,10 @@ fn computeVersion(b: *std.Build) []const u8 {
 }
 
 pub fn build(b: *std.Build) void {
+    // Install into the checkout's bin/, not zig-out/bin. An explicit
+    // `zig build -p <prefix>` is deliberately overridden.
+    b.resolveInstallPrefix(b.pathFromRoot("."), .{});
+
     const target = b.standardTargetOptions(.{});
 
     const opts = b.addOptions();

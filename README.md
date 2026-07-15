@@ -54,7 +54,7 @@ zig build -Doptimize=ReleaseSmall  # optimized release build (installer default)
 zig build test                     # run the test suite
 ```
 
-This produces `zig-out/bin/claude-pager` (zero runtime dependencies).
+This produces `bin/claude-pager` (zero runtime dependencies).
 
 ## Setup
 
@@ -236,7 +236,7 @@ command -v jq >/dev/null 2>&1 || brew install jq
 ```sh
 git clone https://github.com/velppa/claude-pager.git ~/.claude-pager
 ( cd ~/.claude-pager && zig build -Doptimize=ReleaseSmall )
-test -x ~/.claude-pager/zig-out/bin/claude-pager
+test -x ~/.claude-pager/bin/claude-pager
 ```
 
 ### 3. Configure settings.json

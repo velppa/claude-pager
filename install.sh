@@ -38,16 +38,11 @@ fi
 echo "Building..."
 ( cd "$INSTALL_DIR" && zig build -Doptimize=ReleaseSmall )
 
-BUILD_OPEN="${INSTALL_DIR}/zig-out/bin/claude-pager"
-
-if [[ ! -x "$BUILD_OPEN" ]]; then
-    echo "ERROR: build failed — expected binary not found in ${INSTALL_DIR}/zig-out/bin" >&2
+# zig build installs directly into ${INSTALL_DIR}/bin.
+if [[ ! -x "$BINARY" ]]; then
+    echo "ERROR: build failed — expected binary not found in ${INSTALL_DIR}/bin" >&2
     exit 1
 fi
-
-# Install built binary into ${INSTALL_DIR}/bin
-mkdir -p "${INSTALL_DIR}/bin"
-install -m 0755 "$BUILD_OPEN" "$BINARY"
 
 # Strip the local symbol table that ReleaseSmall leaves behind (~10% smaller).
 strip "$BINARY" 2>/dev/null || true
