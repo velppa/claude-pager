@@ -39,6 +39,14 @@ pub fn findTranscript(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
     // The editor only gets the bridge id; look up its UUID in the registry.
     if (try uuidFromBridge(alloc, home)) |uuid| {
         defer alloc.free(uuid);
+        if (try transcriptForUuid(alloc, home, uuid)) |p| return p;
+    }
+    // The bridge id can go stale (a relogin drops the bridge and the registry
+    // entry ends up with bridgeSessionId=null). The registry is also keyed by
+    // the Claude process pid, and this process is a descendant of it — so walk
+    // ancestor pids and match them against the registry directly.
+    if (try uuidFromAncestors(alloc, home)) |uuid| {
+        defer alloc.free(uuid);
         return transcriptForUuid(alloc, home, uuid);
     }
     return null;
@@ -88,6 +96,105 @@ fn uuidFromBridge(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
         return try alloc.dupe(u8, s.string);
     }
     return null;
+}
+
+// proc_pidinfo(PROC_PIDTBSDINFO) — used to walk ancestor pids and to read a
+// process's start time (guards against pid reuse when matching the registry).
+extern "c" fn proc_pidinfo(pid: c_int, flavor: c_int, arg: u64, buffer: ?*anyopaque, buffersize: c_int) c_int;
+
+const PROC_PIDTBSDINFO: c_int = 3;
+
+const ProcBsdInfo = extern struct {
+    pbi_flags: u32,
+    pbi_status: u32,
+    pbi_xstatus: u32,
+    pbi_pid: u32,
+    pbi_ppid: u32,
+    pbi_uid: u32,
+    pbi_gid: u32,
+    pbi_ruid: u32,
+    pbi_rgid: u32,
+    pbi_svuid: u32,
+    pbi_svgid: u32,
+    rfu_1: u32,
+    pbi_comm: [16]u8,
+    pbi_name: [32]u8,
+    pbi_nfiles: u32,
+    pbi_pgid: u32,
+    pbi_pjobc: u32,
+    e_tdev: u32,
+    e_tpgid: u32,
+    pbi_nice: i32,
+    pbi_start_tvsec: u64,
+    pbi_start_tvusec: u64,
+};
+
+/// Walk this process's ancestor pids and return the session UUID of the first
+/// one that has a registry entry (~/.claude/sessions/<pid>.json). The Claude
+/// process that spawned the editor is always an ancestor, so this resolves the
+/// session with no environment cooperation at all. Caller owns the slice.
+fn uuidFromAncestors(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
+    var pid: std.c.pid_t = std.c.getppid();
+    var depth: usize = 0;
+    while (pid > 1 and depth < 12) : (depth += 1) {
+        var info: ProcBsdInfo = undefined;
+        const n = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, @sizeOf(ProcBsdInfo));
+        if (n != @sizeOf(ProcBsdInfo)) return null;
+
+        const start_secs: i64 = @intCast(info.pbi_start_tvsec);
+        if (try registryUuidForPid(alloc, home, pid, start_secs)) |uuid| return uuid;
+        pid = @intCast(info.pbi_ppid);
+    }
+    return null;
+}
+
+/// The registry's startedAt (session start) trails the process start by
+/// however long the CLI takes to boot; allow that much slack when matching.
+const start_match_slack_secs: i64 = 60;
+
+/// Read ~/.claude/sessions/<pid>.json and return its sessionId. When both
+/// `expect_start_secs` (the live process's start time, epoch seconds) and the
+/// entry's startedAt are present they must agree within a small slack — this
+/// rejects a stale registry file left behind by a dead session whose pid the
+/// OS has since reused. Caller owns the slice.
+fn registryUuidForPid(
+    alloc: std.mem.Allocator,
+    home: []const u8,
+    pid: std.c.pid_t,
+    expect_start_secs: ?i64,
+) !?[]u8 {
+    const path = try std.fmt.allocPrint(alloc, "{s}/.claude/sessions/{d}.json", .{ home, pid });
+    defer alloc.free(path);
+
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(65536)) catch return null;
+    defer alloc.free(bytes);
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, bytes, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const obj = parsed.value.object;
+
+    if (expect_start_secs) |want| {
+        if (obj.get("startedAt")) |sa| {
+            const started_ms: ?i64 = switch (sa) {
+                .integer => sa.integer,
+                .float => @intFromFloat(sa.float),
+                else => null,
+            };
+            if (started_ms) |ms| {
+                const started_secs = @divTrunc(ms, 1000);
+                const delta = started_secs - want;
+                if (delta < -2 or delta > start_match_slack_secs) return null;
+            }
+        }
+    }
+
+    const s = obj.get("sessionId") orelse return null;
+    if (s != .string or !uuidValid(s.string)) return null;
+    return try alloc.dupe(u8, s.string);
 }
 
 /// Locate <uuid>.jsonl under any project dir (the session's cwd may differ from
@@ -441,6 +548,49 @@ test "uuidFromBridge maps the bridge id to the session UUID via the registry" {
     defer if (got) |g| a.free(g);
     try std.testing.expect(got != null);
     try std.testing.expectEqualStrings("the-uuid", got.?);
+}
+
+test "registryUuidForPid returns the sessionId for a matching pid file" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var threaded = std.Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    try tmp.dir.createDirPath(io, ".claude/sessions");
+    // startedAt = 1784035756963 ms → 1784035756 s; process started ~1s earlier.
+    try tmp.dir.writeFile(io, .{
+        .sub_path = ".claude/sessions/37300.json",
+        .data = "{\"pid\":37300,\"sessionId\":\"pid-uuid\",\"startedAt\":1784035756963,\"bridgeSessionId\":null}",
+    });
+
+    const home = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer a.free(home);
+
+    // Process start just before startedAt: accepted.
+    const got = try registryUuidForPid(a, home, 37300, 1784035755);
+    defer if (got) |g| a.free(g);
+    try std.testing.expect(got != null);
+    try std.testing.expectEqualStrings("pid-uuid", got.?);
+
+    // No expected start time (caller couldn't read it): accepted.
+    const got2 = try registryUuidForPid(a, home, 37300, null);
+    defer if (got2) |g| a.free(g);
+    try std.testing.expect(got2 != null);
+
+    // Start-time mismatch (pid reused by an unrelated, later process): rejected.
+    const got3 = try registryUuidForPid(a, home, 37300, 1784035756 + 3600);
+    try std.testing.expect(got3 == null);
+
+    // Registry claims a start long after the live process began: rejected.
+    const got5 = try registryUuidForPid(a, home, 37300, 1784035756 - 3600);
+    try std.testing.expect(got5 == null);
+
+    // Unknown pid: no registry file.
+    const got4 = try registryUuidForPid(a, home, 99999, null);
+    try std.testing.expect(got4 == null);
 }
 
 test "uuidFromBridge returns null when no registry entry matches" {
