@@ -21,6 +21,10 @@ pub const Item = struct {
     text: []u8,
     label: ?[]u8,
     is_err: bool,
+    /// tool_use id (e.g. "toolu_..."), when the block carries one.
+    id: ?[]u8 = null,
+    /// Full, untruncated shell command of a Bash tool_use.
+    command: ?[]u8 = null,
 };
 
 pub const Transcript = struct {
@@ -184,8 +188,29 @@ fn handleToolUse(a: std.mem.Allocator, items: *ItemList, block: std.json.ObjectM
         lbl_owned = try a.dupe(u8, lbl);
     }
 
+    // Bash: keep the full command (and the tool_use id) so the renderer can
+    // show it in full instead of the truncated label.
+    var command: ?[]u8 = null;
+    var tu_id: ?[]u8 = null;
+    if (asciiEqIgnoreCase(nm, "Bash")) {
+        if (inp) |input_obj| {
+            if (getString(input_obj.get("command"))) |cmd| {
+                const trimmed = std.mem.trim(u8, cmd, " \n");
+                if (trimmed.len > 0) command = try a.dupe(u8, trimmed);
+            }
+        }
+        if (getString(block.get("id"))) |idv| tu_id = try a.dupe(u8, idv);
+    }
+
     const text = try nm_disp_buf.toOwnedSlice(a);
-    try items.append(a, .{ .type = .tool_use, .text = text, .label = lbl_owned, .is_err = false });
+    try items.append(a, .{
+        .type = .tool_use,
+        .text = text,
+        .label = lbl_owned,
+        .is_err = false,
+        .id = tu_id,
+        .command = command,
+    });
 }
 
 /// Handle a user message whose content is an array: structuredPatch relabeling
@@ -524,6 +549,30 @@ test "local-command-stdout user messages are filtered out" {
     defer tr.deinit();
     try std.testing.expectEqual(@as(usize, 1), tr.items.len);
     try std.testing.expectEqualStrings("keep me", tr.items[0].text);
+}
+
+test "Bash tool_use keeps the full command and id" {
+    const long_cmd = "kubectl --context b-prd-meta exec -n raa-apis-production raa-api-live -- sh -c 'echo one && echo two && echo three && echo four && echo five'";
+    const input =
+        "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_01AB\",\"name\":\"Bash\",\"input\":{\"command\":\"" ++ long_cmd ++ "\"}}]}}\n";
+    var tr = try parse(std.testing.allocator, input);
+    defer tr.deinit();
+    try std.testing.expectEqual(@as(usize, 1), tr.items.len);
+    const it = tr.items[0];
+    try std.testing.expectEqualStrings("Bash", it.text);
+    try std.testing.expectEqualStrings(long_cmd, it.command.?);
+    try std.testing.expectEqualStrings("toolu_01AB", it.id.?);
+    // Label still capped at 72 for non-org consumers.
+    try std.testing.expectEqual(@as(usize, 72), it.label.?.len);
+}
+
+test "non-Bash tool_use carries no command" {
+    const input =
+        "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_02CD\",\"name\":\"Grep\",\"input\":{\"pattern\":\"foo\"}}]}}\n";
+    var tr = try parse(std.testing.allocator, input);
+    defer tr.deinit();
+    try std.testing.expectEqual(@as(usize, 1), tr.items.len);
+    try std.testing.expect(tr.items[0].command == null);
 }
 
 test "Read tool_use with limit becomes 'Read N lines'" {

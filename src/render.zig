@@ -272,6 +272,10 @@ fn renderHumanImpl(l: *Lines, it: transcript.Item) !void {
 // ── IT_TU: tool_use header ───────────────────────────────────────────────────
 fn renderToolUseImpl(l: *Lines, it: transcript.Item) !void {
     const a = l.alloc;
+    if (it.command) |cmd| {
+        try renderBashSrcBlock(l, it, cmd);
+        return;
+    }
     try l.pushBlankOnce();
     var b: std.ArrayListUnmanaged(u8) = .empty;
     defer b.deinit(a);
@@ -305,6 +309,63 @@ fn renderToolUseImpl(l: *Lines, it: transcript.Item) !void {
     try b.appendSlice(a, it.text);
     try b.appendSlice(a, ansi.reset);
     try l.pushwLink(b.items);
+}
+
+/// A Bash tool_use is rendered as a full org src block instead of a
+/// bullet + truncated label:
+///
+///   #+name: Bash tool call <id>
+///   #+begin_src sh
+///   <full command>
+///   #+end_src
+///
+/// Command lines starting with '*', '#+' or ',' get org's comma escape.
+fn renderBashSrcBlock(l: *Lines, it: transcript.Item, cmd: []const u8) !void {
+    const a = l.alloc;
+    try l.pushBlankOnce();
+
+    var b: std.ArrayListUnmanaged(u8) = .empty;
+    defer b.deinit(a);
+    try b.appendSlice(a, ansi.dim);
+    try b.appendSlice(a, ansi.c_hdm);
+    try b.appendSlice(a, "#+name: Bash tool call");
+    if (it.id) |idv| {
+        if (idv.len > 0) {
+            try b.append(a, ' ');
+            try b.appendSlice(a, idv);
+        }
+    }
+    try b.appendSlice(a, ansi.reset);
+    try l.push(b.items);
+
+    const meta = ansi.dim ++ ansi.c_hdm;
+    try l.push(meta ++ "#+begin_src sh" ++ ansi.reset);
+
+    var iter = LineIter{ .s = cmd };
+    while (iter.next()) |raw| {
+        const view = try sanitizeLineView(a, raw);
+        defer if (view.ptr != raw.ptr) a.free(view);
+        if (needsOrgEscape(view)) {
+            var eb: std.ArrayListUnmanaged(u8) = .empty;
+            defer eb.deinit(a);
+            try eb.append(a, ',');
+            try eb.appendSlice(a, view);
+            try l.pushw(eb.items);
+        } else {
+            try l.pushw(view);
+        }
+    }
+
+    try l.push(meta ++ "#+end_src" ++ ansi.reset);
+}
+
+/// Org comma-escape predicate for a line inside a src block: headlines ('*'),
+/// keyword/block lines ('#+'), and already-escaped lines (',') must be
+/// prefixed with ','.
+fn needsOrgEscape(line: []const u8) bool {
+    if (line.len == 0) return false;
+    if (line[0] == '*' or line[0] == ',') return true;
+    return std.mem.startsWith(u8, line, "#+");
 }
 
 // ── IT_TR: tool_result ───────────────────────────────────────────────────────
@@ -1552,6 +1613,58 @@ test "wrap placeholder inserted for overlong line" {
         if (ln.len == 1 and ln[0] == ansi.wrap_placeholder[0]) saw_placeholder = true;
     }
     try std.testing.expect(saw_placeholder);
+}
+
+test "Bash tool_use renders as a full org src block" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cmd = "kubectl get pods \\\n  -n production\n*starred | grep x\n#+weird";
+    const items = [_]transcript.Item{
+        .{
+            .type = .tool_use,
+            .text = @constCast("Bash"),
+            .label = @constCast("kubectl get pods..."),
+            .is_err = false,
+            .id = @constCast("toolu_01XYZ"),
+            .command = @constCast(cmd),
+        },
+    };
+    const lines = try renderItems(a, &items, 110);
+    var flat: std.ArrayListUnmanaged(u8) = .empty;
+    for (lines) |ln| {
+        try flat.appendSlice(a, ln);
+        try flat.append(a, '\n');
+    }
+    try std.testing.expect(std.mem.indexOf(u8, flat.items, "#+name: Bash tool call toolu_01XYZ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, flat.items, "#+begin_src sh") != null);
+    try std.testing.expect(std.mem.indexOf(u8, flat.items, "#+end_src") != null);
+    // Full command, one source line per command line.
+    try std.testing.expect(std.mem.indexOf(u8, flat.items, "kubectl get pods \\") != null);
+    try std.testing.expect(std.mem.indexOf(u8, flat.items, "  -n production") != null);
+    // Org comma escape for '*' and '#+' lines.
+    try std.testing.expect(std.mem.indexOf(u8, flat.items, "\n,*starred | grep x\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, flat.items, "\n,#+weird\n") != null);
+    // The truncated label must not appear.
+    try std.testing.expect(std.mem.indexOf(u8, flat.items, "kubectl get pods...") == null);
+}
+
+test "Bash tool_use without id renders name line without trailing space" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const items = [_]transcript.Item{
+        .{ .type = .tool_use, .text = @constCast("Bash"), .label = null, .is_err = false, .command = @constCast("ls") },
+    };
+    const lines = try renderItems(a, &items, 110);
+    var found = false;
+    for (lines) |ln| {
+        if (std.mem.indexOf(u8, ln, "#+name: Bash tool call") != null) {
+            found = true;
+            try std.testing.expect(std.mem.endsWith(u8, ln, "#+name: Bash tool call" ++ ansi.reset));
+        }
+    }
+    try std.testing.expect(found);
 }
 
 test "tool_use header bytes" {
