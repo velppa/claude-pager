@@ -315,9 +315,10 @@ fn renderToolUseImpl(l: *Lines, it: transcript.Item) !void {
 /// bullet + truncated label:
 ///
 ///   #+name: Bash tool call <id>
-///   #+begin_src sh
+///   #+begin_src sh :results verbatim :wrap example
 ///   <full command>
 ///   #+end_src
+///   <blank>
 ///
 /// Command lines starting with '*', '#+' or ',' get org's comma escape.
 fn renderBashSrcBlock(l: *Lines, it: transcript.Item, cmd: []const u8) !void {
@@ -339,7 +340,7 @@ fn renderBashSrcBlock(l: *Lines, it: transcript.Item, cmd: []const u8) !void {
     try l.push(b.items);
 
     const meta = ansi.dim ++ ansi.c_hdm;
-    try l.push(meta ++ "#+begin_src sh" ++ ansi.reset);
+    try l.push(meta ++ "#+begin_src sh :results verbatim :wrap example" ++ ansi.reset);
 
     var iter = LineIter{ .s = cmd };
     while (iter.next()) |raw| {
@@ -357,6 +358,7 @@ fn renderBashSrcBlock(l: *Lines, it: transcript.Item, cmd: []const u8) !void {
     }
 
     try l.push(meta ++ "#+end_src" ++ ansi.reset);
+    try l.push("");
 }
 
 /// Org comma-escape predicate for a line inside a src block: headlines ('*'),
@@ -1637,8 +1639,10 @@ test "Bash tool_use renders as a full org src block" {
         try flat.append(a, '\n');
     }
     try std.testing.expect(std.mem.indexOf(u8, flat.items, "#+name: Bash tool call toolu_01XYZ") != null);
-    try std.testing.expect(std.mem.indexOf(u8, flat.items, "#+begin_src sh") != null);
+    try std.testing.expect(std.mem.indexOf(u8, flat.items, "#+begin_src sh :results verbatim :wrap example") != null);
     try std.testing.expect(std.mem.indexOf(u8, flat.items, "#+end_src") != null);
+    // Blank line after the block.
+    try std.testing.expect(std.mem.endsWith(u8, flat.items, "#+end_src" ++ ansi.reset ++ "\n\n"));
     // Full command, one source line per command line.
     try std.testing.expect(std.mem.indexOf(u8, flat.items, "kubectl get pods \\") != null);
     try std.testing.expect(std.mem.indexOf(u8, flat.items, "  -n production") != null);

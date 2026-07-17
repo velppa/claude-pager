@@ -2,9 +2,10 @@
  › Alice, please run a shell command to list files.
 
 #+name: Bash tool call toolu_fake0001
-#+begin_src sh
+#+begin_src sh :results verbatim :wrap example
 ls -la /tmp/example
 #+end_src
+
   total 8
   drwxr-xr-x  2 alice staff   64 Jan  2 00:00 .
   drwxrwxrwt 12 root  wheel  384 Jan  2 00:00 ..
