@@ -30,9 +30,13 @@ extern "c" fn fork() std.c.pid_t;
 /// cwd/newest-jsonl guessing — so an unidentified session yields "no transcript"
 /// rather than another session's conversation. Caller owns the slice.
 pub fn findTranscript(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
-    // Some contexts expose the UUID directly.
+    // Some contexts expose the UUID directly. The whole CLAUDE_* env block can
+    // also be inherited from an unrelated session (e.g. an Emacs restarted
+    // from inside a Claude session hands that session's env to everything it
+    // later spawns), so the id is trusted only when the block isn't provably
+    // foreign — see envSessionLeaked.
     if (getEnv("CLAUDE_CODE_SESSION_ID")) |sid| {
-        if (uuidValid(sid)) {
+        if (uuidValid(sid) and !envSessionLeaked()) {
             if (try transcriptForUuid(alloc, home, sid)) |p| return p;
         }
     }
@@ -146,6 +150,31 @@ fn uuidFromAncestors(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
         pid = @intCast(info.pbi_ppid);
     }
     return null;
+}
+
+/// True when `target` appears among this process's ancestor pids.
+fn pidIsAncestor(target: std.c.pid_t) bool {
+    var pid: std.c.pid_t = std.c.getppid();
+    var depth: usize = 0;
+    while (pid > 1 and depth < 12) : (depth += 1) {
+        if (pid == target) return true;
+        var info: ProcBsdInfo = undefined;
+        const n = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, @sizeOf(ProcBsdInfo));
+        if (n != @sizeOf(ProcBsdInfo)) return false;
+        pid = @intCast(info.pbi_ppid);
+    }
+    return false;
+}
+
+/// The CLAUDE_* env block travels together; CLAUDE_PID names the Claude
+/// process that exported it. When that process is not an ancestor, the block
+/// was inherited from another session and its session id must not be trusted.
+/// Absent/unparseable CLAUDE_PID gives no evidence either way — not leaked.
+fn envSessionLeaked() bool {
+    const cp = getEnv("CLAUDE_PID") orelse return false;
+    const pid = std.fmt.parseInt(std.c.pid_t, cp, 10) catch return false;
+    if (pid <= 1) return false;
+    return !pidIsAncestor(pid);
 }
 
 /// The registry's startedAt (session start) trails the process start by
@@ -591,6 +620,25 @@ test "registryUuidForPid returns the sessionId for a matching pid file" {
     // Unknown pid: no registry file.
     const got4 = try registryUuidForPid(a, home, 99999, null);
     try std.testing.expect(got4 == null);
+}
+
+test "envSessionLeaked: absent or empty CLAUDE_PID is not leaked" {
+    _ = setenv("CLAUDE_PID", "", 1);
+    try std.testing.expect(!envSessionLeaked());
+}
+
+test "envSessionLeaked: CLAUDE_PID naming an ancestor is trusted" {
+    var buf: [16]u8 = undefined;
+    const s = try std.fmt.bufPrintZ(&buf, "{d}", .{std.c.getppid()});
+    _ = setenv("CLAUDE_PID", s, 1);
+    defer _ = setenv("CLAUDE_PID", "", 1);
+    try std.testing.expect(!envSessionLeaked());
+}
+
+test "envSessionLeaked: CLAUDE_PID naming a foreign process is leaked" {
+    _ = setenv("CLAUDE_PID", "99999999", 1);
+    defer _ = setenv("CLAUDE_PID", "", 1);
+    try std.testing.expect(envSessionLeaked());
 }
 
 test "uuidFromBridge returns null when no registry entry matches" {
