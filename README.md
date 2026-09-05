@@ -139,17 +139,18 @@ You can force the path with `CLAUDE_PAGER_EDITOR_TYPE=tui` or `CLAUDE_PAGER_EDIT
 
 ## OpenCode
 
-OpenCode exports a session as JSON. Pass that exact export through
-`CLAUDE_PAGER_TRANSCRIPT` when launching the pager:
+Install the bundled OpenCode TUI plugin as described in
+[`opencode/README.md`](opencode/README.md). It exports the active session and
+passes that exact export through `CLAUDE_PAGER_TRANSCRIPT` when launching the
+pager. The pager intentionally does not choose the most recent OpenCode
+session: multiple sessions may share a project directory.
 
-```sh
-opencode export "$OPENCODE_SESSION_ID" > /tmp/opencode-session.json
-CLAUDE_PAGER_TRANSCRIPT=/tmp/opencode-session.json claude-pager --with-summary "$PROMPT_FILE"
+The plugin performs this handoff at each keypress:
+
+```text
+active OpenCode session -> temporary export -> CLAUDE_PAGER_TRANSCRIPT
+                                         -> $EDITOR <temporary prompt>
 ```
-
-An OpenCode plugin or command that knows the active session should set this
-variable for its editor launch. The pager intentionally does not choose the
-most recent OpenCode session: multiple sessions may share a project directory.
 
 ## Emacs Integration
 
