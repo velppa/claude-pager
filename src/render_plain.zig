@@ -73,7 +73,7 @@ pub fn renderPlain(
 
     // `parse` owns an arena (built from `alloc`); reuse it for rendering and the
     // output buffer so a single `tr.deinit()` reclaims everything.
-    var tr = try transcript.parse(alloc, jsonl);
+    var tr = try transcript.parseAny(alloc, jsonl);
     defer tr.deinit();
     const a = tr.arena.allocator();
     const lines = try render.renderItems(a, tr.items, cols);
@@ -109,7 +109,7 @@ pub fn renderColored(
     const jsonl = try cwd.readFileAlloc(io, transcript_path, alloc, .unlimited);
     defer alloc.free(jsonl);
 
-    var tr = try transcript.parse(alloc, jsonl);
+    var tr = try transcript.parseAny(alloc, jsonl);
     defer tr.deinit();
     const a = tr.arena.allocator();
     const lines = try render.renderItems(a, tr.items, cols);

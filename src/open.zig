@@ -30,6 +30,11 @@ extern "c" fn fork() std.c.pid_t;
 /// cwd/newest-jsonl guessing — so an unidentified session yields "no transcript"
 /// rather than another session's conversation. Caller owns the slice.
 pub fn findTranscript(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
+    // Hosts that can identify a session exactly may hand its exported transcript
+    // to the pager directly. Never replace this with a newest-session heuristic.
+    if (getEnv("CLAUDE_PAGER_TRANSCRIPT")) |path| {
+        if (pathValid(path)) return try alloc.dupe(u8, path);
+    }
     // Some contexts expose the UUID directly. The whole CLAUDE_* env block can
     // also be inherited from an unrelated session (e.g. an Emacs restarted
     // from inside a Claude session hands that session's env to everything it
@@ -54,6 +59,10 @@ pub fn findTranscript(alloc: std.mem.Allocator, home: []const u8) !?[]u8 {
         return transcriptForUuid(alloc, home, uuid);
     }
     return null;
+}
+
+fn pathValid(path: []const u8) bool {
+    return path.len > 0 and std.mem.indexOfScalar(u8, path, 0) == null;
 }
 
 /// A session id is a bare UUID; anything with a path separator (or NUL) is

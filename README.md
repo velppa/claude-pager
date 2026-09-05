@@ -27,6 +27,7 @@ That's the whole flow. No alternate screen, no input loop, no background process
 - Leaves native terminal scrollback, mouse selection, and link handling untouched
 - First-class Emacs integration (transcript-above-prompt buffer)
 - Works with any GUI editor (VS Code, Cursor, Zed, Sublime, etc.) and any TUI editor (vim, nvim, emacs, …)
+- Renders OpenCode `opencode export` session documents
 
 ## Requirements
 
@@ -135,6 +136,20 @@ The resolution order is: `CLAUDE_PAGER_EDITOR` (env or settings.json) → `VISUA
 TUI editors (vim, nvim, emacs, nano, …) take over the terminal, so they are exec'd directly and the static summary is **not** printed (the editor owns the screen; it gets the transcript via `CLAUDE_PAGER_RENDER_FILE` instead). GUI editors run alongside the static summary.
 
 You can force the path with `CLAUDE_PAGER_EDITOR_TYPE=tui` or `CLAUDE_PAGER_EDITOR_TYPE=gui` in the `env` section.
+
+## OpenCode
+
+OpenCode exports a session as JSON. Pass that exact export through
+`CLAUDE_PAGER_TRANSCRIPT` when launching the pager:
+
+```sh
+opencode export "$OPENCODE_SESSION_ID" > /tmp/opencode-session.json
+CLAUDE_PAGER_TRANSCRIPT=/tmp/opencode-session.json claude-pager --with-summary "$PROMPT_FILE"
+```
+
+An OpenCode plugin or command that knows the active session should set this
+variable for its editor launch. The pager intentionally does not choose the
+most recent OpenCode session: multiple sessions may share a project directory.
 
 ## Emacs Integration
 

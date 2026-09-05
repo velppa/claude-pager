@@ -115,6 +115,84 @@ pub fn parse(backing: std.mem.Allocator, jsonl: []const u8) !Transcript {
     };
 }
 
+/// Parse either Claude Code JSONL or an `opencode export` document.
+pub fn parseAny(backing: std.mem.Allocator, input: []const u8) !Transcript {
+    const trimmed = std.mem.trimStart(u8, input, " \t\r\n");
+    if (std.mem.startsWith(u8, trimmed, "{\"info\"")) return parseOpenCode(backing, trimmed);
+    return parse(backing, input);
+}
+
+fn parseOpenCode(backing: std.mem.Allocator, input: []const u8) !Transcript {
+    var arena = std.heap.ArenaAllocator.init(backing);
+    errdefer arena.deinit();
+    const a = arena.allocator();
+    var items: ItemList = .empty;
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, input, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidOpenCodeExport;
+    const messages = parsed.value.object.get("messages") orelse return error.InvalidOpenCodeExport;
+    if (messages != .array) return error.InvalidOpenCodeExport;
+
+    for (messages.array.items) |message_value| {
+        if (message_value != .object) continue;
+        const message = message_value.object;
+        const info_value = message.get("info") orelse continue;
+        if (info_value != .object) continue;
+        const role = getString(info_value.object.get("role")) orelse continue;
+        const item_type: ItemType = if (std.mem.eql(u8, role, "user")) .user else if (std.mem.eql(u8, role, "assistant")) .assistant else continue;
+        const parts = message.get("parts") orelse continue;
+        if (parts != .array) continue;
+
+        for (parts.array.items) |part_value| {
+            if (part_value != .object) continue;
+            const part = part_value.object;
+            const kind = getString(part.get("type")) orelse continue;
+            if (std.mem.eql(u8, kind, "text")) {
+                if (try extractText(a, part.get("text"))) |text| {
+                    try items.append(a, .{ .type = item_type, .text = text, .label = null, .is_err = false });
+                }
+            } else if (item_type == .assistant and std.mem.eql(u8, kind, "tool")) {
+                try handleOpenCodeTool(a, &items, part);
+            }
+        }
+    }
+
+    return .{ .items = try items.toOwnedSlice(a), .arena = arena };
+}
+
+fn handleOpenCodeTool(a: std.mem.Allocator, items: *ItemList, part: std.json.ObjectMap) !void {
+    const name = getString(part.get("tool")) orelse "Tool";
+    var label: []const u8 = "";
+    var result: ?[]const u8 = null;
+    var is_err = false;
+
+    if (part.get("state")) |state_value| {
+        if (state_value == .object) {
+            const state = state_value.object;
+            label = getString(state.get("title")) orelse label;
+            if (getString(state.get("status"))) |status| is_err = std.mem.eql(u8, status, "error");
+            if (state.get("input")) |input_value| {
+                if (input_value == .object and label.len == 0) {
+                    label = getString(input_value.object.get("command")) orelse label;
+                }
+            }
+            result = getString(state.get(if (is_err) "error" else "output"));
+        }
+    }
+
+    try items.append(a, .{
+        .type = .tool_use,
+        .text = try a.dupe(u8, name),
+        .label = try a.dupe(u8, label),
+        .is_err = false,
+        .command = if (std.ascii.eqlIgnoreCase(name, "bash")) try a.dupe(u8, label) else null,
+    });
+    if (result) |text| {
+        if (text.len > 0) try items.append(a, .{ .type = .tool_result, .text = try a.dupe(u8, text), .label = null, .is_err = is_err });
+    }
+}
+
 /// Build the display name + label for a tool_use block, including the
 /// Read / Edit / MultiEdit special cases and the 72-char label truncation.
 fn handleToolUse(a: std.mem.Allocator, items: *ItemList, block: std.json.ObjectMap) !void {
@@ -573,6 +651,22 @@ test "non-Bash tool_use carries no command" {
     defer tr.deinit();
     try std.testing.expectEqual(@as(usize, 1), tr.items.len);
     try std.testing.expect(tr.items[0].command == null);
+}
+
+test "parseAny parses OpenCode export text and tools" {
+    const input =
+        \\{"info":{"id":"ses_x"},"messages":[
+        \\  {"info":{"role":"user"},"parts":[{"type":"text","text":"hello"}]},
+        \\  {"info":{"role":"assistant"},"parts":[{"type":"text","text":"hi"},{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"pwd"},"output":"/tmp"}}]}
+        \\]}
+    ;
+    var tr = try parseAny(std.testing.allocator, input);
+    defer tr.deinit();
+    try std.testing.expectEqual(@as(usize, 4), tr.items.len);
+    try std.testing.expectEqualStrings("hello", tr.items[0].text);
+    try std.testing.expectEqualStrings("hi", tr.items[1].text);
+    try std.testing.expectEqualStrings("pwd", tr.items[2].command.?);
+    try std.testing.expectEqualStrings("/tmp", tr.items[3].text);
 }
 
 test "Read tool_use with limit becomes 'Read N lines'" {
