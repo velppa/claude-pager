@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# OpenCode prompt editor: apply claude-prompt.el's prompt-only save behavior.
+set -euo pipefail
+
+promptfile="${1:?no prompt file given}"
+export TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+emacsclient -e "(progn (load \"$script_dir/claude-prompt.el\" nil t) (setq claude-prompt--pending t claude-prompt--pending-transcript nil claude-prompt--pending-render nil))" \
+  >/dev/null 2>&1 || true
+
+exec emacsclient "$promptfile" >/dev/null 2>&1
