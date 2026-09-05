@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Run one OpenCode server and attached session for a project.
+set -euo pipefail
+
+project="${1:?project directory required}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+editor="$script_dir/opencode-emacs-prompt"
+cd "$project"
+
+checksum=$(printf %s "$project" | cksum)
+checksum=${checksum%% *}
+port=$((4100 + checksum % 1000))
+server="http://127.0.0.1:$port"
+
+opencode serve --port "$port" >"${TMPDIR:-/tmp}/opencode-server-$port.log" 2>&1 &
+server_pid=$!
+trap 'kill "$server_pid" 2>/dev/null || true' EXIT INT TERM
+
+attempt=0
+until curl -fsS "$server/global/health" >/dev/null; do
+  attempt=$((attempt + 1))
+  if ! kill -0 "$server_pid" 2>/dev/null || [[ "$attempt" -eq 100 ]]; then
+    exit 1
+  fi
+  sleep 0.1
+done
+
+session=$(curl -fsS -X POST "$server/session" \
+  -H 'Content-Type: application/json' -d '{}' | jq -er '.id')
+EDITOR="$editor" OPENCODE_SESSION_ID="$session" \
+  opencode attach "$server" --session "$session"
