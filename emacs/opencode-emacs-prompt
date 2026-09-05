@@ -1,10 +1,29 @@
 #!/usr/bin/env bash
-# OpenCode prompt editor: apply claude-prompt.el's prompt-only save behavior.
+# OpenCode prompt editor with an exact-session transcript when available.
 set -euo pipefail
 
 promptfile="${1:?no prompt file given}"
 export TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The outer editor invocation knows the session only when OpenCode was started
+# with OPENCODE_SESSION_ID. Export it before claude-pager renders the context.
+if [[ -z "${CLAUDE_PAGER_OPENCODE_EDITOR:-}" && -n "${OPENCODE_SESSION_ID:-}" && -x "$script_dir/../bin/claude-pager" ]]; then
+  transcript=$(mktemp "$TMPDIR/opencode-session.XXXXXX")
+  if opencode export "$OPENCODE_SESSION_ID" >"$transcript" 2>/dev/null; then
+    export CLAUDE_PAGER_TRANSCRIPT="$transcript"
+    export CLAUDE_PAGER_OPENCODE_EDITOR=1
+    export CLAUDE_PAGER_EDITOR="$script_dir/opencode-emacs-prompt"
+    export CLAUDE_PAGER_EDITOR_TYPE=tui
+    exec "$script_dir/../bin/claude-pager" "$promptfile"
+  else
+    rm -f "$transcript"
+  fi
+fi
+
+# claude-pager has rendered the exported transcript into its own temporary
+# file. The raw OpenCode export is no longer needed.
+[[ -n "${CLAUDE_PAGER_TRANSCRIPT:-}" ]] && rm -f "$CLAUDE_PAGER_TRANSCRIPT"
 
 emacsclient -e "(progn (load \"$script_dir/claude-prompt.el\" nil t) (setq claude-prompt--pending t claude-prompt--pending-transcript nil claude-prompt--pending-render nil))" \
   >/dev/null 2>&1 || true

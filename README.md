@@ -139,16 +139,20 @@ You can force the path with `CLAUDE_PAGER_EDITOR_TYPE=tui` or `CLAUDE_PAGER_EDIT
 
 ## OpenCode
 
-OpenCode exports a session as JSON. Pass that exact export through
-`CLAUDE_PAGER_TRANSCRIPT` when launching the pager:
+OpenCode exports a session as JSON. The dedicated Emacs editor shim uses the
+exact session when OpenCode is attached to its server with `--session`:
 
 ```sh
-opencode export "$OPENCODE_SESSION_ID" > /tmp/opencode-session.json
-CLAUDE_PAGER_TRANSCRIPT=/tmp/opencode-session.json claude-pager --with-summary "$PROMPT_FILE"
+opencode serve --port 4096
+# In another terminal, create a session with POST /session and retain its ses_... id.
+OPENCODE_SESSION_ID=ses_... EDITOR=/path/to/claude-pager/emacs/opencode-emacs-prompt \
+  opencode attach http://127.0.0.1:4096 --session ses_...
 ```
 
-The pager intentionally does not choose the most recent OpenCode session:
-multiple sessions may share a project directory.
+The shim exports `OPENCODE_SESSION_ID` with `opencode export`, hands it to
+claude-pager for rendering, and deletes the raw temporary export. It never
+chooses the most recent OpenCode session: multiple sessions may share a project
+directory.
 
 ## Emacs Integration
 
