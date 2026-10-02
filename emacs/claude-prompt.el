@@ -118,6 +118,7 @@ verbatim; otherwise render TRANSCRIPT-PATH (.jsonl) ourselves."
     ;; can trigger markdown-mode otherwise. Switch first; it kills local vars,
     ;; so all setq-local/hooks below must follow it.
     (fundamental-mode)
+    (abbrev-mode 1)
     ;; Remember the render file so we can unlink it when the buffer dies; the
     ;; pager exec's away and cannot clean up after itself.
     (when (and render-path (file-exists-p render-path))
