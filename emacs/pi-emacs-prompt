@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# pi prompt editor (pi's `externalEditor`, Ctrl-G): opens the prompt in Emacs
+# with the exact pi session transcript shown read-only above the separator.
+#
+# pi spawns the editor with no session information, so the companion pi
+# extension (pi/claude-pager.ts) exports the active session file as
+# CLAUDE_PAGER_PI_SESSION_FILE into pi's own environment. Without it, the
+# prompt still opens, just with no transcript — never a guessed session.
+set -euo pipefail
+
+promptfile="${1:?no prompt file given}"
+export TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Outer invocation (from pi): hand the session to claude-pager, which renders
+# it to CLAUDE_PAGER_RENDER_FILE and execs this script again as the editor.
+session="${CLAUDE_PAGER_PI_SESSION_FILE:-}"
+if [[ -z "${CLAUDE_PAGER_PI_EDITOR:-}" && -n "$session" && -r "$session" && -x "$script_dir/../bin/claude-pager" ]]; then
+  # The session file is pi's live history: claude-pager only reads it, and
+  # unlike the OpenCode export it must never be deleted here.
+  export CLAUDE_PAGER_TRANSCRIPT="$session"
+  export CLAUDE_PAGER_PI_EDITOR=1
+  export CLAUDE_PAGER_EDITOR="$script_dir/pi-emacs-prompt"
+  export CLAUDE_PAGER_EDITOR_TYPE=tui
+  exec "$script_dir/../bin/claude-pager" "$promptfile"
+fi
+
+# Inner invocation: arm claude-prompt.el with the plain-text render (if any),
+# then open the prompt file. No .jsonl fallback: claude-prompt.el can only
+# render Claude transcripts itself.
+render_el="nil"
+rf="${CLAUDE_PAGER_RENDER_FILE:-}"
+[[ -n "$rf" && -r "$rf" ]] && render_el="\"$rf\""
+emacsclient -e "(progn (load \"$script_dir/claude-prompt.el\" nil t) (setq claude-prompt--pending t claude-prompt--pending-transcript nil claude-prompt--pending-render $render_el))" \
+  >/dev/null 2>&1 || true
+
+# Blocks until C-c C-c / C-c C-k. Silence emacsclient: bytes written here land
+# on pi's suspended TUI. pi treats a non-zero exit as "edit failed".
+exec emacsclient "$promptfile" >/dev/null 2>&1

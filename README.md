@@ -28,6 +28,7 @@ That's the whole flow. No alternate screen, no input loop, no background process
 - First-class Emacs integration (transcript-above-prompt buffer)
 - Works with any GUI editor (VS Code, Cursor, Zed, Sublime, etc.) and any TUI editor (vim, nvim, emacs, …)
 - Renders OpenCode `opencode export` session documents
+- Renders [pi](https://github.com/earendil-works/pi) session files (active branch only)
 
 ## Requirements
 
@@ -153,6 +154,43 @@ The shim exports `OPENCODE_SESSION_ID` with `opencode export`, hands it to
 claude-pager for rendering, and deletes the raw temporary export. It never
 chooses the most recent OpenCode session: multiple sessions may share a project
 directory.
+
+## pi
+
+[pi](https://github.com/earendil-works/pi) opens its `externalEditor` on
+**Ctrl-G**, but gives the editor no session information. A small pi extension
+exports the current session file into pi's environment, and the Emacs shim hands
+it to claude-pager for rendering:
+
+| File | Role |
+| --- | --- |
+| `pi/claude-pager.ts` | pi extension. On every `session_start` (startup, `/new`, `/resume`, `/fork`, reload) sets `CLAUDE_PAGER_PI_SESSION_FILE` to the active session file. |
+| `emacs/pi-emacs-prompt` | Editor shim. Renders that session through claude-pager, then opens the prompt in Emacs with the transcript above the separator. |
+
+Setup (after the [Emacs setup](#emacs-integration) below):
+
+```sh
+mkdir -p ~/.pi/agent/extensions
+ln -sf "$PWD/pi/claude-pager.ts" ~/.pi/agent/extensions/claude-pager.ts
+```
+
+Then set the editor in `~/.pi/agent/settings.json` (pi splits this command on
+spaces, so the path must not contain any):
+
+```json
+{
+  "externalEditor": "/path/to/claude-pager/emacs/pi-emacs-prompt"
+}
+```
+
+Restart pi (or `/reload`) and press **Ctrl-G**. Finish with `C-c C-c`; the text
+below the separator replaces pi's editor contents. `C-c C-k` empties it.
+
+Only the active branch of the session tree is shown: the path from the newest
+entry back to the root. After `/tree` moves to another branch, the transcript
+follows once the next message is written. Without the extension (or in a
+`--no-session` session) the prompt opens with no transcript; the shim never
+guesses a session from the directory.
 
 ## Emacs Integration
 

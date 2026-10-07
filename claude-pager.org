@@ -18,6 +18,9 @@ integration.
 - `tests/fixtures/` — sample transcripts + plain-text goldens, wired in via
   `addAnonymousImport` in `build.zig`.
 - ~emacs/~, ~shim/~ — Emacs integration + session-transcript hooks.
+- ~pi/~ — pi extension exporting the session file for ~emacs/pi-emacs-prompt~.
+  ~transcript.parseAny~ detects pi sessions by their ~{"type":"session","version":N}~
+  header and renders only the active branch (newest entry → root).
 
 ** Versioning
 

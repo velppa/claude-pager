@@ -88,7 +88,7 @@ pub fn parse(backing: std.mem.Allocator, jsonl: []const u8) !Transcript {
                         try items.append(a, .{ .type = .assistant, .text = t, .label = null, .is_err = false });
                     }
                 } else if (std.mem.eql(u8, bt, "tool_use")) {
-                    try handleToolUse(a, &items, block);
+                    try handleToolUse(a, &items, getString(block.get("name")) orelse "?", block.get("input"), block.get("id"));
                 }
                 // "thinking" and any other block type: ignored.
             }
@@ -115,11 +115,136 @@ pub fn parse(backing: std.mem.Allocator, jsonl: []const u8) !Transcript {
     };
 }
 
-/// Parse either Claude Code JSONL or an `opencode export` document.
+/// Parse Claude Code JSONL, a pi session JSONL, or an `opencode export` document.
 pub fn parseAny(backing: std.mem.Allocator, input: []const u8) !Transcript {
     const trimmed = std.mem.trimStart(u8, input, " \t\r\n");
     if (std.mem.startsWith(u8, trimmed, "{\"info\"")) return parseOpenCode(backing, trimmed);
+    if (isPiSession(trimmed)) return parsePi(backing, trimmed);
     return parse(backing, input);
+}
+
+/// A pi session file starts with a `{"type":"session","version":N,...}` header.
+fn isPiSession(input: []const u8) bool {
+    const first = input[0 .. std.mem.indexOfScalar(u8, input, '\n') orelse input.len];
+    var buf: [4096]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const parsed = std.json.parseFromSlice(std.json.Value, fba.allocator(), first, .{}) catch return false;
+    if (parsed.value != .object) return false;
+    const obj = parsed.value.object;
+    const t = getString(obj.get("type")) orelse return false;
+    return std.mem.eql(u8, t, "session") and obj.get("version") != null;
+}
+
+/// Parse a pi session (https://github.com/earendil-works/pi, docs/session-format.md).
+///
+/// Entries form a tree via `id`/`parentId`; abandoned branches stay in the
+/// file. Only the active branch is rendered: the path from the last entry
+/// (pi appends the new leaf on every write) back to the root. The full
+/// pre-compaction history on that path is kept — it is context for a human.
+fn parsePi(backing: std.mem.Allocator, input: []const u8) !Transcript {
+    var arena = std.heap.ArenaAllocator.init(backing);
+    errdefer arena.deinit();
+    const a = arena.allocator();
+
+    var entries: std.ArrayListUnmanaged(std.json.ObjectMap) = .empty;
+    var by_id: std.StringHashMapUnmanaged(usize) = .empty;
+
+    var line_it = std.mem.splitScalar(u8, input, '\n');
+    while (line_it.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0) continue;
+        // Values live in the arena for the whole parse; never deinit them here.
+        const parsed = std.json.parseFromSliceLeaky(std.json.Value, a, line, .{}) catch continue;
+        if (parsed != .object) continue;
+        const id = getString(parsed.object.get("id")) orelse continue;
+        const t = getString(parsed.object.get("type")) orelse continue;
+        if (std.mem.eql(u8, t, "session")) continue; // header: not part of the tree
+        try by_id.put(a, id, entries.items.len);
+        try entries.append(a, parsed.object);
+    }
+
+    // Walk leaf → root, guarding against malformed cycles.
+    var path: std.ArrayListUnmanaged(std.json.ObjectMap) = .empty;
+    if (entries.items.len > 0) {
+        var cur: ?usize = entries.items.len - 1;
+        while (cur) |idx| {
+            if (path.items.len > entries.items.len) break;
+            const e = entries.items[idx];
+            try path.append(a, e);
+            const pid = getString(e.get("parentId")) orelse break;
+            cur = by_id.get(pid);
+        }
+    }
+    std.mem.reverse(std.json.ObjectMap, path.items);
+
+    var items: ItemList = .empty;
+    for (path.items) |e| {
+        const t = getString(e.get("type")) orelse continue;
+        if (!std.mem.eql(u8, t, "message")) continue;
+        const mv = e.get("message") orelse continue;
+        if (mv != .object) continue;
+        try handlePiMessage(a, &items, mv.object);
+    }
+
+    return .{ .items = try items.toOwnedSlice(a), .arena = arena };
+}
+
+fn handlePiMessage(a: std.mem.Allocator, items: *ItemList, msg: std.json.ObjectMap) !void {
+    const role = getString(msg.get("role")) orelse return;
+    const content = msg.get("content");
+
+    if (std.mem.eql(u8, role, "user")) {
+        if (try piText(a, content)) |t| try items.append(a, .{ .type = .user, .text = t, .label = null, .is_err = false });
+    } else if (std.mem.eql(u8, role, "assistant")) {
+        const ct = content orelse return;
+        if (ct != .array) return;
+        for (ct.array.items) |bv| {
+            if (bv != .object) continue;
+            const block = bv.object;
+            const bt = getString(block.get("type")) orelse continue;
+            if (std.mem.eql(u8, bt, "text")) {
+                if (try extractText(a, block.get("text"))) |t| {
+                    try items.append(a, .{ .type = .assistant, .text = t, .label = null, .is_err = false });
+                }
+            } else if (std.mem.eql(u8, bt, "toolCall")) {
+                try handleToolUse(a, items, getString(block.get("name")) orelse "?", block.get("arguments"), block.get("id"));
+            }
+            // "thinking" and other blocks: ignored, as for Claude transcripts.
+        }
+    } else if (std.mem.eql(u8, role, "toolResult")) {
+        const is_err = if (msg.get("isError")) |v| v == .bool and v.bool else false;
+        if (try piText(a, content)) |t| try items.append(a, .{ .type = .tool_result, .text = t, .label = null, .is_err = is_err });
+    } else if (std.mem.eql(u8, role, "bashExecution")) {
+        // User-entered `!cmd`: show it like a Bash tool call and its output.
+        const cmd = std.mem.trim(u8, getString(msg.get("command")) orelse return, " \n");
+        if (cmd.len == 0) return;
+        var input: std.json.ObjectMap = .empty;
+        try input.put(a, "command", .{ .string = cmd });
+        try handleToolUse(a, items, "Bash", .{ .object = input }, null);
+        const is_err = if (getInt(msg.get("exitCode"))) |c| c != 0 else false;
+        if (try extractText(a, msg.get("output"))) |t| try items.append(a, .{ .type = .tool_result, .text = t, .label = null, .is_err = is_err });
+    }
+    // system, custom, branchSummary, compactionSummary: not conversation turns.
+}
+
+/// Text of pi content: a string, or the text blocks of a block array joined by
+/// '\n'. Images and other blocks are skipped. Trimmed; null when empty.
+fn piText(a: std.mem.Allocator, content: ?std.json.Value) !?[]u8 {
+    const ct = content orelse return null;
+    if (ct == .string) return extractText(a, ct);
+    if (ct != .array) return null;
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    for (ct.array.items) |bv| {
+        if (bv != .object) continue;
+        const bt = getString(bv.object.get("type")) orelse continue;
+        if (!std.mem.eql(u8, bt, "text")) continue;
+        const s = getString(bv.object.get("text")) orelse continue;
+        if (buf.items.len > 0) try buf.append(a, '\n');
+        try buf.appendSlice(a, s);
+    }
+    const trimmed = std.mem.trim(u8, buf.items, " \n");
+    if (trimmed.len == 0) return null;
+    return try a.dupe(u8, trimmed);
 }
 
 fn parseOpenCode(backing: std.mem.Allocator, input: []const u8) !Transcript {
@@ -195,8 +320,13 @@ fn handleOpenCodeTool(a: std.mem.Allocator, items: *ItemList, part: std.json.Obj
 
 /// Build the display name + label for a tool_use block, including the
 /// Read / Edit / MultiEdit special cases and the 72-char label truncation.
-fn handleToolUse(a: std.mem.Allocator, items: *ItemList, block: std.json.ObjectMap) !void {
-    const nm = getString(block.get("name")) orelse "?";
+fn handleToolUse(
+    a: std.mem.Allocator,
+    items: *ItemList,
+    nm: []const u8,
+    inp_val: ?std.json.Value,
+    id_val: ?std.json.Value,
+) !void {
 
     // Default display name is the tool name (nm_disp).
     var nm_disp_buf: std.ArrayListUnmanaged(u8) = .empty;
@@ -204,7 +334,6 @@ fn handleToolUse(a: std.mem.Allocator, items: *ItemList, block: std.json.ObjectM
 
     var lbl: []const u8 = "";
 
-    const inp_val = block.get("input");
     const inp: ?std.json.ObjectMap = if (inp_val != null and inp_val.? == .object) inp_val.?.object else null;
 
     if (inp) |input_obj| {
@@ -277,7 +406,7 @@ fn handleToolUse(a: std.mem.Allocator, items: *ItemList, block: std.json.ObjectM
                 if (trimmed.len > 0) command = try a.dupe(u8, trimmed);
             }
         }
-        if (getString(block.get("id"))) |idv| tu_id = try a.dupe(u8, idv);
+        if (getString(id_val)) |idv| tu_id = try a.dupe(u8, idv);
     }
 
     const text = try nm_disp_buf.toOwnedSlice(a);
@@ -702,4 +831,55 @@ test "structured patch relabels tool_use and emits payload" {
     try std.testing.expectEqualStrings("Added 2 lines, removed 1 lines", tr.items[1].text);
     try std.testing.expect(std.mem.startsWith(u8, tr.items[2].text, "CP_SP1\n"));
     try std.testing.expect(std.mem.indexOf(u8, tr.items[2].text, "F\t/f\n") != null);
+}
+
+test "parseAny parses a pi session: text, toolCall, toolResult, bashExecution" {
+    const input =
+        \\{"type":"session","version":3,"id":"s1","timestamp":"t","cwd":"/p"}
+        \\{"type":"message","id":"a0","parentId":null,"timestamp":"t","message":{"role":"system","content":"","sections":{"preamble":"You are..."}}}
+        \\{"type":"message","id":"a1","parentId":"a0","timestamp":"t","message":{"role":"user","content":[{"type":"text","text":"  hello  "}]}}
+        \\{"type":"message","id":"a2","parentId":"a1","timestamp":"t","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"hi"},{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"pwd","timeout":5}}]}}
+        \\{"type":"message","id":"a3","parentId":"a2","timestamp":"t","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash","content":[{"type":"text","text":"/tmp"}],"isError":true}}
+        \\{"type":"model_change","id":"a4","parentId":"a3","timestamp":"t","provider":"x","modelId":"y"}
+        \\{"type":"message","id":"a5","parentId":"a4","timestamp":"t","message":{"role":"bashExecution","command":"ls","output":"f\n","exitCode":0,"cancelled":false,"truncated":false}}
+        \\{"type":"message","id":"a6","parentId":"a5","timestamp":"t","message":{"role":"user","content":"bye"}}
+    ;
+    var tr = try parseAny(std.testing.allocator, input);
+    defer tr.deinit();
+    try std.testing.expectEqual(@as(usize, 7), tr.items.len);
+    try std.testing.expectEqual(ItemType.user, tr.items[0].type);
+    try std.testing.expectEqualStrings("hello", tr.items[0].text);
+    try std.testing.expectEqualStrings("hi", tr.items[1].text);
+    try std.testing.expectEqual(ItemType.tool_use, tr.items[2].type);
+    try std.testing.expectEqualStrings("pwd", tr.items[2].command.?);
+    try std.testing.expectEqualStrings("c1", tr.items[2].id.?);
+    try std.testing.expectEqualStrings("/tmp", tr.items[3].text);
+    try std.testing.expect(tr.items[3].is_err);
+    try std.testing.expectEqualStrings("Bash", tr.items[4].text);
+    try std.testing.expectEqualStrings("ls", tr.items[4].command.?);
+    try std.testing.expectEqualStrings("f", tr.items[5].text);
+    try std.testing.expect(!tr.items[5].is_err);
+    try std.testing.expectEqualStrings("bye", tr.items[6].text);
+}
+
+test "pi session renders only the active branch" {
+    // b2 was abandoned via /tree; the leaf (last entry) continues from a1.
+    const input =
+        \\{"type":"session","version":3,"id":"s1","timestamp":"t","cwd":"/p"}
+        \\{"type":"message","id":"a1","parentId":null,"timestamp":"t","message":{"role":"user","content":"root"}}
+        \\{"type":"message","id":"b2","parentId":"a1","timestamp":"t","message":{"role":"user","content":"abandoned"}}
+        \\{"type":"branch_summary","id":"c2","parentId":"a1","timestamp":"t","fromId":"b2","summary":"s"}
+        \\{"type":"message","id":"c3","parentId":"c2","timestamp":"t","message":{"role":"user","content":"active"}}
+    ;
+    var tr = try parseAny(std.testing.allocator, input);
+    defer tr.deinit();
+    try std.testing.expectEqual(@as(usize, 2), tr.items.len);
+    try std.testing.expectEqualStrings("root", tr.items[0].text);
+    try std.testing.expectEqualStrings("active", tr.items[1].text);
+}
+
+test "Claude transcripts are not mistaken for pi sessions" {
+    try std.testing.expect(!isPiSession("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"x\"}}"));
+    try std.testing.expect(!isPiSession("{\"type\":\"session\"}"));
+    try std.testing.expect(isPiSession("{\"type\":\"session\",\"version\":3,\"id\":\"x\"}\n{}"));
 }
