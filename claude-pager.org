@@ -5,11 +5,15 @@ integration.
 
 * Development
 ** Build & test
-- Build: ~zig build~ (default ~ReleaseSmall~). Debug: ~zig build -Doptimize=Debug~.
+- Build: ~zig build~ (default ~small~). Debug: ~zig build -Doptimize=debug~.
 - Test: ~zig build test~ (tests always run with full runtime safety).
-- Toolchain: Zig 0.16 (via mise). APIs assume 0.16 — note std churn (e.g. no
-  `std.process.Child.run`, no `std.Thread.sleep`, `getenv` scans `std.c.environ`).
-- Binaries land in ~bin/~; ~bin/~, ~zig-out/~, ~.zig-cache/~ are gitignored.
+- Toolchain: Zig 0.17 (via mise). APIs assume 0.17 — note std churn (e.g. no
+  `std.process.Child.run`, no `std.Thread.sleep`, `getenv` scans `std.c.environ`;
+  0.17: no `**` array repeat (use `@splat`), `dupeZ` → `dupeSentinel`,
+  `bufPrintZ` → `bufPrintSentinel`, `std.builtin.OptimizeMode` → `std.lang.Optimize`).
+- Binaries land in ~zig-out/bin/~ and are copied to ~bin/~ (0.17 fixes the
+  install prefix at make time, so build.zig can't redirect it). ~bin/~,
+  ~zig-out/~, ~.zig-cache/~ are gitignored.
 
 ** Layout
 - ~src/main_open.zig~ — entrypoint for ~claude-pager-open~ (the ~$EDITOR~ shim).

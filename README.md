@@ -33,7 +33,7 @@ That's the whole flow. No alternate screen, no input loop, no background process
 ## Requirements
 
 - macOS (arm64 or x86_64)
-- [Zig](https://ziglang.org/) 0.16.0
+- [Zig](https://ziglang.org/) 0.17.0
 - `jq` (installed automatically via Homebrew if missing)
 
 ## Install
@@ -52,7 +52,7 @@ This clones the repo to `~/.claude-pager`, builds the binary, sets `editor` in `
 git clone https://github.com/velppa/claude-pager.git
 cd claude-pager
 zig build                          # debug build
-zig build -Doptimize=ReleaseSmall  # optimized release build (installer default)
+zig build -Doptimize=small        # optimized release build (installer default)
 zig build test                     # run the test suite
 ```
 
@@ -281,8 +281,8 @@ This section is for AI coding agents (Claude Code, Cursor, Copilot, etc.). Every
 ### 1. Check prerequisites
 
 ```sh
-# macOS required; ensure Zig 0.16.0 is available
-command -v zig >/dev/null 2>&1 || { echo "install Zig 0.16.0 from https://ziglang.org/"; exit 1; }
+# macOS required; ensure Zig 0.17.0 is available
+command -v zig >/dev/null 2>&1 || { echo "install Zig 0.17.0 from https://ziglang.org/"; exit 1; }
 # jq required for settings.json manipulation
 command -v jq >/dev/null 2>&1 || brew install jq
 ```
@@ -291,7 +291,7 @@ command -v jq >/dev/null 2>&1 || brew install jq
 
 ```sh
 git clone https://github.com/velppa/claude-pager.git ~/.claude-pager
-( cd ~/.claude-pager && zig build -Doptimize=ReleaseSmall )
+( cd ~/.claude-pager && zig build -Doptimize=small )
 test -x ~/.claude-pager/bin/claude-pager
 ```
 

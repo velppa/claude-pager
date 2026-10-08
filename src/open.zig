@@ -298,7 +298,7 @@ pub fn maybeRenderTranscript(alloc: std.mem.Allocator, home: []const u8, tty_fd:
     @memcpy(key_buf[0.."CLAUDE_PAGER_RENDER_FILE".len], "CLAUDE_PAGER_RENDER_FILE");
     key_buf["CLAUDE_PAGER_RENDER_FILE".len] = 0;
 
-    const val_z = alloc.dupeZ(u8, render_path) catch {
+    const val_z = alloc.dupeSentinel(u8, render_path, 0) catch {
         alloc.free(render_path);
         return null;
     };
@@ -359,7 +359,7 @@ pub fn spawnEditor(
 ) !std.posix.pid_t {
     const cmd = try std.fmt.allocPrintSentinel(alloc, "exec {s} \"$1\"", .{editor}, 0);
     defer alloc.free(cmd);
-    const file_z = try alloc.dupeZ(u8, file);
+    const file_z = try alloc.dupeSentinel(u8, file, 0);
     defer alloc.free(file_z);
 
     const pid = fork();
@@ -397,7 +397,7 @@ pub fn terminalEditorPath(
 
     const cmd = try std.fmt.allocPrintSentinel(alloc, "exec {s} \"$1\"", .{editor}, 0);
     defer alloc.free(cmd);
-    const file_z = try alloc.dupeZ(u8, file);
+    const file_z = try alloc.dupeSentinel(u8, file, 0);
     defer alloc.free(file_z);
 
     const argv = [_:null]?[*:0]const u8{ "sh", "-c", cmd.ptr, "sh", file_z.ptr };
@@ -638,7 +638,7 @@ test "envSessionLeaked: absent or empty CLAUDE_PID is not leaked" {
 
 test "envSessionLeaked: CLAUDE_PID naming an ancestor is trusted" {
     var buf: [16]u8 = undefined;
-    const s = try std.fmt.bufPrintZ(&buf, "{d}", .{std.c.getppid()});
+    const s = try std.fmt.bufPrintSentinel(&buf, "{d}", .{std.c.getppid()}, 0);
     _ = setenv("CLAUDE_PID", s, 1);
     defer _ = setenv("CLAUDE_PID", "", 1);
     try std.testing.expect(!envSessionLeaked());

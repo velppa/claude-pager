@@ -878,7 +878,7 @@ fn tryRenderTable(l: *Lines, header_line: []const u8, iter: *LineIter) !bool {
     defer if (sep.ptr != sep_raw.ptr) a.free(sep);
     if (!isTableSepLine(sep)) return false;
 
-    var header_buf: [md_tbl_max_cols][]const u8 = .{""} ** md_tbl_max_cols;
+    var header_buf: [md_tbl_max_cols][]const u8 = @splat("");
     var hcols = splitTableCells(header_line, &header_buf, md_tbl_max_cols);
     if (hcols > table_max_cols_default) hcols = table_max_cols_default;
     if (hcols == 0) return false;
@@ -900,7 +900,7 @@ fn tryRenderTable(l: *Lines, header_line: []const u8, iter: *LineIter) !bool {
         const rline = try sanitizeLineView(a, rline_raw);
         defer if (rline.ptr != rline_raw.ptr) a.free(rline);
         if (!looksLikeTableRow(rline)) break;
-        var rowcells: [md_tbl_max_cols][]const u8 = .{""} ** md_tbl_max_cols;
+        var rowcells: [md_tbl_max_cols][]const u8 = @splat("");
         const ncells = splitTableCells(rline, &rowcells, table_max_cols_default);
         if (ncells == 0) break;
         if (ncells > ncol) ncol = ncells;
@@ -1004,7 +1004,7 @@ fn renderTableBlock(
 
     // Header row (bold), wrapped to its column widths.
     {
-        var hsrc: [md_tbl_max_cols][]const u8 = .{""} ** md_tbl_max_cols;
+        var hsrc: [md_tbl_max_cols][]const u8 = @splat("");
         for (0..ncol) |c| hsrc[c] = if (c < hcols) header[c] else "";
         try emitWrappedRow(l, wslice, ncol, hsrc[0..ncol], true);
     }
@@ -1014,7 +1014,7 @@ fn renderTableBlock(
 
     // Body rows, each wrapped to its column widths.
     for (rows, 0..) |row, r| {
-        var bsrc: [md_tbl_max_cols][]const u8 = .{""} ** md_tbl_max_cols;
+        var bsrc: [md_tbl_max_cols][]const u8 = @splat("");
         for (0..ncol) |c| bsrc[c] = row[c];
         try emitWrappedRow(l, wslice, ncol, bsrc[0..ncol], false);
         if (r + 1 < rows.len) {
@@ -1605,9 +1605,9 @@ test "wrap placeholder inserted for overlong line" {
     defer arena.deinit();
     const aa = arena.allocator();
     // A tool_use whose visible text exceeds cols → L_pushw inserts placeholders.
-    const long = "X" ** 50;
+    const long: [50]u8 = @splat('X');
     const items = [_]transcript.Item{
-        .{ .type = .tool_use, .text = @constCast(long), .label = null, .is_err = false },
+        .{ .type = .tool_use, .text = @constCast(&long), .label = null, .is_err = false },
     };
     const lines = try renderItems(aa, &items, 20);
     var saw_placeholder = false;

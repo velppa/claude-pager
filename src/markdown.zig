@@ -374,7 +374,7 @@ pub fn renderBlock(alloc: std.mem.Allocator, md: []const u8, cols: usize) ![][]u
             // Peek the separator line.
             if (it.peek()) |sep_line| {
                 if (isTableSepLine(sep_line)) {
-                    var header_buf: [md_tbl_max_cols][]const u8 = .{""} ** md_tbl_max_cols;
+                    var header_buf: [md_tbl_max_cols][]const u8 = @splat("");
                     var hcols = splitTableCells(line, &header_buf, md_tbl_max_cols);
                     if (hcols > md_tbl_max_cols) hcols = md_tbl_max_cols;
                     if (hcols > 0) {
@@ -385,7 +385,7 @@ pub fn renderBlock(alloc: std.mem.Allocator, md: []const u8, cols: usize) ![][]u
                         while (rows.items.len < 32) {
                             const rline = it.peek() orelse break;
                             if (!looksLikeTableRow(rline)) break;
-                            var rowcells: [md_tbl_max_cols][]const u8 = .{""} ** md_tbl_max_cols;
+                            var rowcells: [md_tbl_max_cols][]const u8 = @splat("");
                             const ncells = splitTableCells(rline, &rowcells, md_tbl_max_cols);
                             if (ncells == 0) break;
                             if (ncells > ncol) ncol = ncells;

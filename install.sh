@@ -36,7 +36,7 @@ fi
 
 # ── Build ────────────────────────────────────────────────────────────────────
 echo "Building..."
-( cd "$INSTALL_DIR" && zig build -Doptimize=ReleaseSmall )
+( cd "$INSTALL_DIR" && zig build -Doptimize=small )
 
 # zig build installs directly into ${INSTALL_DIR}/bin.
 if [[ ! -x "$BINARY" ]]; then
@@ -44,7 +44,7 @@ if [[ ! -x "$BINARY" ]]; then
     exit 1
 fi
 
-# Strip the local symbol table that ReleaseSmall leaves behind (~10% smaller).
+# Strip the local symbol table that -Doptimize=small leaves behind (~10% smaller).
 strip "$BINARY" 2>/dev/null || true
 
 if [[ ! -x "$BINARY" ]]; then
