@@ -11,10 +11,25 @@ set -euo pipefail
 promptfile="${1:?no prompt file given}"
 export TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+session="${CLAUDE_PAGER_PI_SESSION_FILE:-}"
+
+# pi always names the file prompt.md. Edit a copy named after the session
+# (pi-prompt-<id>.md, the id from the session header) and hand it back.
+if [[ -z "${CLAUDE_PAGER_PI_EDITOR:-}" && "$(basename "$promptfile")" == prompt.md && -n "$session" && -r "$session" ]]; then
+  id="$(sed -n '1s/.*"id":"\([^"]*\)".*/\1/p' "$session")"
+  if [[ -n "$id" ]]; then
+    named="${TMPDIR%/}/pi-prompt-$id.md"
+    cp "$promptfile" "$named"
+    status=0
+    "${BASH_SOURCE[0]}" "$named" || status=$?
+    cp "$named" "$promptfile"
+    rm -f "$named"
+    exit "$status"
+  fi
+fi
 
 # Outer invocation (from pi): hand the session to claude-pager, which renders
 # it to CLAUDE_PAGER_RENDER_FILE and execs this script again as the editor.
-session="${CLAUDE_PAGER_PI_SESSION_FILE:-}"
 if [[ -z "${CLAUDE_PAGER_PI_EDITOR:-}" && -n "$session" && -r "$session" && -x "$script_dir/../bin/claude-pager" ]]; then
   # The session file is pi's live history: claude-pager only reads it, and
   # unlike the OpenCode export it must never be deleted here.
